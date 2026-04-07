@@ -42,3 +42,4 @@ visible_tables:
   - products
   - campaigns
   - loyalty_program
+  - locations

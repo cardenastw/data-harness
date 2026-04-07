@@ -1,0 +1,9 @@
+name: products
+description: "Menu items sold across all locations"
+columns:
+  category:
+    description: "Product category"
+    values: ["coffee", "espresso", "tea", "pastry", "sandwich", "other"]
+  size:
+    description: "Drink or item size"
+    values: ["small", "medium", "large"]

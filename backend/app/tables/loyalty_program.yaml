@@ -1,0 +1,6 @@
+name: loyalty_program
+description: "Customer loyalty program memberships and points"
+columns:
+  tier:
+    description: "Loyalty membership tier"
+    values: ["bronze", "silver", "gold"]

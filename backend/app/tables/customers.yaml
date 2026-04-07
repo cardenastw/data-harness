@@ -1,0 +1,5 @@
+name: customers
+description: "Registered customers"
+columns:
+  preferred_location_id:
+    description: "The location this customer visits most often (FK to locations)"

@@ -1,0 +1,5 @@
+name: inventory
+description: "Current stock levels per product per location"
+columns:
+  reorder_level:
+    description: "Minimum quantity threshold — stock below this level needs restocking"

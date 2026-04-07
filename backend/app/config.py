@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     sql_max_rows: int = 500
     max_tool_iterations: int = 10
     contexts_dir: str = "app/contexts"
+    tables_dir: str = "app/tables"
 
     model_config = {"env_prefix": "", "case_sensitive": False}
 

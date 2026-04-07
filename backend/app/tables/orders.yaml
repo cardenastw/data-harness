@@ -1,0 +1,9 @@
+name: orders
+description: "Customer orders placed across all Brewed Awakening locations"
+columns:
+  order_type:
+    description: "How the order was placed"
+    values: ["in_store", "online_pickup"]
+  status:
+    description: "Current order status"
+    values: ["pending", "completed", "cancelled", "refunded"]

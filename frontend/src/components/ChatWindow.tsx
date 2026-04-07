@@ -5,14 +5,15 @@ import MessageBubble from "./MessageBubble";
 interface Props {
   messages: Message[];
   isLoading: boolean;
+  statusText: string;
 }
 
-export default function ChatWindow({ messages, isLoading }: Props) {
+export default function ChatWindow({ messages, isLoading, statusText }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isLoading]);
+  }, [messages, isLoading, statusText]);
 
   return (
     <div className="chat-window">
@@ -35,9 +36,9 @@ export default function ChatWindow({ messages, isLoading }: Props) {
         <MessageBubble key={i} message={msg} />
       ))}
       {isLoading && (
-        <div className="message message-assistant">
-          <div className="message-role">Assistant</div>
-          <div className="thinking">Thinking...</div>
+        <div className="status-bar">
+          <div className="status-spinner" />
+          <span>{statusText || "Thinking..."}</span>
         </div>
       )}
       <div ref={bottomRef} />

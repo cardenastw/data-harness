@@ -27,17 +27,22 @@ async def lifespan(app: FastAPI):
     context_manager = ContextManager(contexts_dir=Path(settings.contexts_dir))
     context_manager.load_all()
 
+    # Load table documentation
+    from app.harness.table_docs import TableDocManager
+
+    table_doc_manager = TableDocManager(tables_dir=Path(settings.tables_dir))
+    table_doc_manager.load_all()
+
     # Register tools
     from app.harness.sql.safety import SQLSafetyValidator
     from app.harness.tool_registry import ToolRegistry
-    from app.harness.tools.create_chart import CreateChartTool
     from app.harness.tools.get_schema import GetSchemaTool
     from app.harness.tools.run_sql import RunSQLTool
 
+    sql_safety = SQLSafetyValidator()
     tool_registry = ToolRegistry()
-    tool_registry.register(GetSchemaTool(sql_engine))
-    tool_registry.register(RunSQLTool(sql_engine, SQLSafetyValidator(), settings))
-    tool_registry.register(CreateChartTool())
+    tool_registry.register(GetSchemaTool(sql_engine, table_doc_manager))
+    tool_registry.register(RunSQLTool(sql_engine, sql_safety, settings))
 
     # Create orchestrator
     from app.harness.llm.client import LLMClient
@@ -52,8 +57,10 @@ async def lifespan(app: FastAPI):
         tool_registry=tool_registry,
         tool_executor=ToolExecutor(tool_registry),
         context_manager=context_manager,
-        prompt_builder=PromptBuilder(),
+        prompt_builder=PromptBuilder(table_doc_manager),
         sql_engine=sql_engine,
+        sql_safety_validator=sql_safety,
+        settings=settings,
     )
 
     app.state.orchestrator = orchestrator

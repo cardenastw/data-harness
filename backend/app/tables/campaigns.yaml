@@ -1,0 +1,9 @@
+name: campaigns
+description: "Marketing campaigns across various channels"
+columns:
+  channel:
+    description: "Marketing channel used"
+    values: ["email", "social_media", "in_store", "referral"]
+  status:
+    description: "Current campaign status"
+    values: ["planned", "active", "completed", "cancelled"]

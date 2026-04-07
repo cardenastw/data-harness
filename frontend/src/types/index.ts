@@ -6,7 +6,7 @@ export interface Context {
 
 export interface QueryResult {
   columns: string[];
-  rows: any[][];
+  rows: unknown[][];
   row_count: number;
   truncated: boolean;
   execution_time_ms: number;
@@ -15,7 +15,7 @@ export interface QueryResult {
 export interface ChartConfig {
   chartType: "bar" | "line" | "pie" | "area" | "scatter";
   title: string;
-  data: Record<string, any>[];
+  data: Record<string, unknown>[];
   xAxis: string;
   yAxis: string;
   xLabel?: string;

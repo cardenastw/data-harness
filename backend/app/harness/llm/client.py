@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import List, Optional, Union
 
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
@@ -15,6 +15,7 @@ class LLMClient:
         self,
         messages: List[dict],
         tools: Optional[List[dict]] = None,
+        tool_choice: Optional[Union[dict, str]] = None,
     ) -> ChatCompletion:
         kwargs: dict = {
             "model": self._model,
@@ -22,6 +23,6 @@ class LLMClient:
         }
         if tools:
             kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
+            kwargs["tool_choice"] = tool_choice or "auto"
 
         return await self._client.chat.completions.create(**kwargs)

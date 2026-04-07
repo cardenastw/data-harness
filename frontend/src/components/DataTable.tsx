@@ -4,7 +4,7 @@ interface Props {
   result: QueryResult;
 }
 
-function formatCell(value: any): string {
+function formatCell(value: unknown): string {
   if (value === null || value === undefined) return "—";
   if (typeof value === "number") {
     if (Number.isInteger(value)) return value.toLocaleString();
