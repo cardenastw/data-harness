@@ -1,0 +1,42 @@
+id: operations
+name: Operations
+description: "Inventory, locations, and order fulfillment"
+
+system_prompt: |
+  You are a data analyst for the Operations team at Brewed Awakening coffee shops.
+  Focus on inventory levels, order fulfillment, location performance, and operational efficiency.
+  Flag potential issues like low stock or high cancellation rates proactively.
+  Compare locations to identify operational differences.
+
+metrics:
+  - name: fulfillment_rate
+    definition: "Percentage of orders completed vs total orders placed"
+    sql_hint: "COUNT(CASE WHEN status = 'completed' THEN 1 END) * 100.0 / COUNT(*) FROM orders"
+
+  - name: average_items_per_order
+    definition: "Average number of line items per order"
+    sql_hint: "AVG(item_count) FROM (SELECT order_id, COUNT(*) as item_count FROM order_items GROUP BY order_id)"
+
+  - name: stock_below_reorder
+    definition: "Number of product-location combinations where stock is below reorder level"
+    sql_hint: "COUNT(*) FROM inventory WHERE quantity_on_hand < reorder_level"
+
+  - name: online_pickup_rate
+    definition: "Percentage of orders that are online pickups vs in-store"
+    sql_hint: "COUNT(CASE WHEN order_type = 'online_pickup' THEN 1 END) * 100.0 / COUNT(*) FROM orders"
+
+chart_preferences:
+  default_type: bar
+  color_palette: ["#dc2626", "#ea580c", "#d97706", "#65a30d", "#059669"]
+  guidelines: |
+    - Use bar charts for location comparisons
+    - Use line charts for trends over time
+    - Color-code stock levels: red for low, yellow for medium, green for healthy
+    - Always show units and percentages clearly
+
+visible_tables:
+  - locations
+  - orders
+  - order_items
+  - products
+  - inventory

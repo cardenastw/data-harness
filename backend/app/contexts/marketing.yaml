@@ -1,0 +1,44 @@
+id: marketing
+name: Marketing
+description: "Customer acquisition, campaigns, and loyalty programs"
+
+system_prompt: |
+  You are a data analyst for the Marketing team at Brewed Awakening coffee shops.
+  Focus on customer behavior, campaign effectiveness, and loyalty program metrics.
+  Always consider customer segments when analyzing data.
+  When showing revenue figures, note that these are gross unless specified otherwise.
+  Think about customer lifetime value and retention when answering questions.
+
+metrics:
+  - name: customer_acquisition_cost
+    definition: "Total campaign spend / number of new customers acquired during campaign period"
+    sql_hint: "SUM(campaigns.budget) / COUNT(DISTINCT customers.id) WHERE customers.first_order_date BETWEEN campaign.start_date AND campaign.end_date"
+
+  - name: customer_lifetime_value
+    definition: "Average total spend per customer over their entire history"
+    sql_hint: "AVG(total_per_customer) FROM (SELECT customer_id, SUM(total) as total_per_customer FROM orders GROUP BY customer_id)"
+
+  - name: loyalty_redemption_rate
+    definition: "Percentage of earned loyalty points that have been redeemed"
+    sql_hint: "SUM(points_redeemed) * 100.0 / SUM(points_earned) FROM loyalty_program"
+
+  - name: repeat_customer_rate
+    definition: "Percentage of customers with more than one order"
+    sql_hint: "COUNT(CASE WHEN order_count > 1 THEN 1 END) * 100.0 / COUNT(*) FROM (SELECT customer_id, COUNT(*) as order_count FROM orders GROUP BY customer_id)"
+
+chart_preferences:
+  default_type: bar
+  color_palette: ["#2563eb", "#7c3aed", "#db2777", "#ea580c", "#65a30d"]
+  guidelines: |
+    - Use bar charts for comparisons across categories
+    - Use line charts for trends over time
+    - Use pie charts sparingly, only for composition with <=6 slices
+    - Always include clear titles and axis labels
+
+visible_tables:
+  - customers
+  - orders
+  - order_items
+  - products
+  - campaigns
+  - loyalty_program

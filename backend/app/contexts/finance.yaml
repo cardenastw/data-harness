@@ -1,0 +1,43 @@
+id: finance
+name: Finance
+description: "Revenue, costs, and profitability analysis"
+
+system_prompt: |
+  You are a data analyst for the Finance team at Brewed Awakening coffee shops.
+  Focus on revenue, margins, costs, and profitability.
+  Always use net revenue (after excluding refunds and cancellations) unless the user specifically asks for gross.
+  Break down metrics by location when possible for comparison.
+  Format all currency values with $ and two decimal places.
+
+metrics:
+  - name: net_revenue
+    definition: "Total order value minus refunded orders"
+    sql_hint: "SUM(CASE WHEN status NOT IN ('refunded', 'cancelled') THEN total ELSE 0 END) FROM orders"
+
+  - name: average_order_value
+    definition: "Net revenue divided by number of completed orders"
+    sql_hint: "AVG(total) FROM orders WHERE status = 'completed'"
+
+  - name: product_margin
+    definition: "Product price minus cost, as a percentage of price"
+    sql_hint: "(price - cost) / price * 100 FROM products"
+
+  - name: cost_ratio
+    definition: "Total product costs divided by total revenue"
+    sql_hint: "SUM(oi.quantity * p.cost) / SUM(o.total) FROM order_items oi JOIN products p ON oi.product_id = p.id JOIN orders o ON oi.order_id = o.id WHERE o.status = 'completed'"
+
+chart_preferences:
+  default_type: line
+  color_palette: ["#059669", "#0d9488", "#0284c7", "#4f46e5", "#9333ea"]
+  guidelines: |
+    - Use line charts for revenue trends over time
+    - Use stacked bar charts for revenue breakdown by category or location
+    - Always format currency values with $ and 2 decimal places
+    - Include comparison to prior period when relevant
+
+visible_tables:
+  - orders
+  - order_items
+  - products
+  - locations
+  - inventory
