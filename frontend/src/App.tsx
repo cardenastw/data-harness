@@ -8,12 +8,14 @@ import type { Message, Artifact } from "./types";
 
 function App() {
   const [contextId, setContextId] = useState("marketing");
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [statusText, setStatusText] = useState("");
 
   const handleContextChange = (id: string) => {
     setContextId(id);
+    setSessionId(null);
     setMessages([]);
   };
 
@@ -36,14 +38,16 @@ function App() {
     };
 
     try {
-      const apiMessages = updatedMessages.map((m) => ({
-        role: m.role,
-        content: m.content,
-      }));
-
       await sendMessageStream(
-        { context_id: contextId, messages: apiMessages },
         {
+          message: content,
+          session_id: sessionId ?? undefined,
+          context_id: sessionId ? undefined : contextId,
+        },
+        {
+          onSession: (id) => {
+            setSessionId(id);
+          },
           onStatus: (message) => {
             setStatusText(message);
           },

@@ -37,8 +37,9 @@ export interface Message {
 }
 
 export interface ChatRequest {
-  context_id: string;
-  messages: { role: string; content: string }[];
+  message: string;
+  session_id?: string;
+  context_id?: string;
 }
 
 export interface ChatResponse {

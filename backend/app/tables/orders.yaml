@@ -1,6 +1,10 @@
 name: orders
 description: "Customer orders placed across all Brewed Awakening locations"
 columns:
+  location_id:
+    description: "Foreign key to locations.id — JOIN locations to get the location name"
+  customer_id:
+    description: "Foreign key to customers.id — JOIN customers to get the customer name"
   order_type:
     description: "How the order was placed"
     values: ["in_store", "online_pickup"]

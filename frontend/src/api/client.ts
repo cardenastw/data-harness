@@ -9,6 +9,7 @@ export async function fetchContexts(): Promise<ContextsResponse> {
 }
 
 export interface StreamCallbacks {
+  onSession?: (sessionId: string) => void;
   onStatus: (message: string) => void;
   onArtifact: (artifact: Artifact) => void;
   onContent: (text: string) => void;
@@ -70,6 +71,9 @@ export async function sendMessageStream(
         const parsed = JSON.parse(data);
 
         switch (eventType) {
+          case "session":
+            callbacks.onSession?.(parsed.session_id);
+            break;
           case "status":
             callbacks.onStatus(parsed.message);
             break;

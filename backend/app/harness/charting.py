@@ -108,6 +108,8 @@ def build_auto_chart(
     columns: Sequence[str],
     rows: Sequence[Sequence[Any]],
     chart_preferences: Any = None,
+    chart_type: Optional[str] = None,
+    title: Optional[str] = None,
 ) -> ChartBuildResult:
     row_values = [list(row) for row in rows]
     validation = validate_chart_data(columns, row_values)
@@ -135,14 +137,20 @@ def build_auto_chart(
             error="chart_query did not produce at least 2 complete chartable rows."
         )
 
-    chart_type = "line" if inference.is_time else "bar"
+    valid_types = ("bar", "line", "pie", "area", "scatter")
+    if chart_type not in valid_types:
+        chart_type = "line" if inference.is_time else "bar"
+
+    auto_title = (
+        f"{inference.value_col} by {inference.label_col}"
+        .replace("_", " ")
+        .title()
+    )
 
     return ChartBuildResult(
         chart={
             "chartType": chart_type,
-            "title": f"{inference.value_col} by {inference.label_col}"
-            .replace("_", " ")
-            .title(),
+            "title": title or auto_title,
             "data": data,
             "xAxis": inference.label_col,
             "yAxis": inference.value_col,

@@ -11,8 +11,9 @@ class MessageIn(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    context_id: str
-    messages: List[MessageIn]
+    message: str
+    session_id: Optional[str] = None
+    context_id: Optional[str] = None
 
 
 class ArtifactOut(BaseModel):

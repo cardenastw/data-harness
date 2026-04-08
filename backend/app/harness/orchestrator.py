@@ -22,14 +22,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MAX_CHART_RECOVERY_ATTEMPTS = 3
+MAX_TEXT_RETRIES = 2   # LLM responds without calling any tool
+MAX_SQL_ERRORS = 3     # run_sql returns an error
 
 CHART_QUERY_SYSTEM_PROMPT = """\
-You are a SQL expert. Given a user question, the SQL query that answered it, and \
-the database schema, write a single SELECT query that breaks down the answer for \
-a chart visualization.
+You are a SQL and data visualization expert. Given a user question, the SQL query \
+that answered it, and the database schema, produce a chart specification.
 
-Rules:
-- Must return at least 2 rows.
+Return a JSON object with these fields:
+- "query": a single SELECT query that breaks down the answer for charting (must return at least 2 rows)
+- "chart_type": one of "bar", "line", "pie", "area", "scatter"
+- "title": a short human-readable chart title
+
+Pick chart_type based on the data shape:
+- "line" for time series (data over days/months/years)
+- "bar" for comparing categories (locations, products, statuses)
+- "pie" for showing composition/share (small number of categories, max 6-8 slices)
+- "area" for cumulative or stacked time series
+- "scatter" for showing correlation between two numeric values
+
+SQL rules:
 - Must have a label/date column and a numeric column.
 - When the answer query filters to a single month, GROUP BY date(column) to get daily rows.
 - When the answer query spans multiple months, GROUP BY strftime('%Y-%m', column).
@@ -37,16 +49,49 @@ Rules:
 - Use the same WHERE filters as the answer query.
 - Use SQLite syntax: date('now'), strftime(), etc.
 - Date modifiers MUST be separate arguments: date('now', 'start of month', '-1 month').
-- Return ONLY the raw SQL query. No explanation, no markdown, no code fences.
+- The ONLY valid modifiers are: 'start of month', 'start of year', 'start of day', '+N days', '-N days', '+N months', '-N months', '+N years', '-N years'. NOTHING ELSE EXISTS.
+
+Common mistakes to AVOID:
+- WRONG: date('now', 'start of last month') → RIGHT: date('now', 'start of month', '-1 month')
+- WRONG: date('now', '-1 month start of month') → RIGHT: date('now', 'start of month', '-1 month')
+- Each modifier MUST be a separate quoted argument.
+
+Return ONLY the JSON object. No explanation, no markdown, no code fences.
 
 Example:
-Answer query: SELECT COUNT(*) FROM orders WHERE order_date >= date('now','start of month','-1 month') AND order_date < date('now','start of month')
-Chart query: SELECT date(order_date) as day, COUNT(*) as orders FROM orders WHERE order_date >= date('now','start of month','-1 month') AND order_date < date('now','start of month') GROUP BY day ORDER BY day
+{"query": "SELECT date(order_date) as day, COUNT(*) as orders FROM orders WHERE order_date >= date('now','start of month','-1 month') AND order_date < date('now','start of month') GROUP BY day ORDER BY day", "chart_type": "line", "title": "Daily Orders Last Month"}
 """
 
 _TABLE_PATTERN = re.compile(
     r"\b(?:FROM|JOIN)\s+[\"'`]?(\w+)[\"'`]?", re.IGNORECASE
 )
+
+
+def _parse_chart_response(raw: str) -> Optional[dict]:
+    """Parse the chart LLM response as JSON, falling back to raw SQL extraction."""
+    text = raw.strip()
+    # Try JSON first
+    try:
+        # Strip markdown fences if present
+        if text.startswith("```"):
+            match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+            if match:
+                text = match.group(1).strip()
+        parsed = json.loads(text)
+        if isinstance(parsed, dict) and parsed.get("query"):
+            return {
+                "query": parsed["query"].replace(";", ""),
+                "chart_type": parsed.get("chart_type"),
+                "title": parsed.get("title"),
+            }
+    except (json.JSONDecodeError, KeyError):
+        pass
+
+    # Fallback: treat as raw SQL
+    sql = _extract_sql(text)
+    if sql:
+        return {"query": sql, "chart_type": None, "title": None}
+    return None
 
 
 def _strip_sql_from_content(content: str) -> str:
@@ -88,7 +133,10 @@ class Orchestrator:
         self._max_iterations = max_iterations
 
     async def run_stream(
-        self, messages: List[dict], context_id: str
+        self, messages: List[dict], context_id: str,
+        turn_messages: Optional[List[dict]] = None,
+        query_state_out: Optional[list] = None,
+        prior_query_state: Optional[dict] = None,
     ) -> AsyncGenerator[str, None]:
         context = self._context_manager.get(context_id)
         if context is None:
@@ -98,16 +146,39 @@ class Orchestrator:
         system_prompt = await self._prompt_builder.build(context, self._sql_engine)
         full_messages = [{"role": "system", "content": system_prompt}] + messages
 
+        # Inject structured state from the prior turn's query
+        if prior_query_state:
+            state_text = _format_query_state(prior_query_state)
+            for i in range(len(full_messages) - 1, -1, -1):
+                if full_messages[i].get("role") == "user":
+                    full_messages[i] = {
+                        **full_messages[i],
+                        "content": full_messages[i]["content"] + "\n\n" + state_text,
+                    }
+                    break
+
         tools = self._registry.to_openai_tools()
         logger.info(f"Tools registered: {[t['function']['name'] for t in tools]}")
 
         user_question = _last_user_message(messages)
+        has_called_run_sql = False
+        text_retries = 0
+        sql_errors = 0
+        attempted_sql: set = set()
 
         for iteration in range(self._max_iterations):
             logger.info(f"Orchestrator iteration {iteration + 1}")
             yield self._sse("status", {"message": "Thinking..."})
 
-            response = await self._llm.chat_completion(full_messages, tools=tools)
+            # Force tool use if the LLM hasn't queried data yet and SQL retries remain
+            tool_choice = (
+                "required"
+                if not has_called_run_sql and iteration > 0 and sql_errors < MAX_SQL_ERRORS
+                else None
+            )
+            response = await self._llm.chat_completion(
+                full_messages, tools=tools, tool_choice=tool_choice,
+            )
             choice = response.choices[0]
             message = choice.message
 
@@ -117,9 +188,31 @@ class Orchestrator:
                 f"finish_reason: {choice.finish_reason}"
             )
 
-            # If no tool calls, stream the final text
             if not message.tool_calls:
+                if not has_called_run_sql:
+                    text_retries += 1
+                    if text_retries <= MAX_TEXT_RETRIES and sql_errors < MAX_SQL_ERRORS:
+                        logger.info("LLM responded without calling run_sql, retrying with forced tool use")
+                        if message.content:
+                            full_messages.append({"role": "assistant", "content": message.content})
+                            full_messages.append({
+                                "role": "user",
+                                "content": "You must call run_sql to answer this question. Do not answer from memory.",
+                            })
+                        continue
+                    logger.info(
+                        "Retry budget exhausted (text_retries=%d, sql_errors=%d), returning error",
+                        text_retries, sql_errors,
+                    )
+                    yield self._sse("content", {
+                        "text": "I wasn't able to retrieve that data. Could you try rephrasing your question?",
+                    })
+                    yield self._sse("done", {})
+                    return
+
                 content = _strip_sql_from_content(message.content or "")
+                if turn_messages is not None:
+                    turn_messages.append({"role": "assistant", "content": content})
                 yield self._sse("content", {"text": content})
                 yield self._sse("done", {})
                 return
@@ -141,10 +234,33 @@ class Orchestrator:
                 ],
             }
             full_messages.append(assistant_msg)
+            if turn_messages is not None:
+                turn_messages.append(assistant_msg)
 
             for tool_call in message.tool_calls:
                 tool_name = tool_call.function.name
                 tool_args = tool_call.function.arguments
+
+                # Dedup guard: skip if the LLM sends the same run_sql query again
+                if tool_name == "run_sql":
+                    try:
+                        parsed_args = json.loads(tool_args)
+                    except json.JSONDecodeError:
+                        parsed_args = {}
+                    normalized = _normalize_sql(parsed_args.get("query", ""))
+                    if normalized in attempted_sql:
+                        logger.info("Duplicate SQL query detected, skipping execution")
+                        tool_msg = {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": json.dumps({
+                                "error": "You already tried this exact query and it failed. Write a DIFFERENT query."
+                            }),
+                        }
+                        full_messages.append(tool_msg)
+                        sql_errors += 1
+                        continue
+                    attempted_sql.add(normalized)
 
                 yield self._sse("status", {"message": _tool_status(tool_name)})
                 logger.info(f"Executing tool: {tool_name}")
@@ -157,16 +273,23 @@ class Orchestrator:
                 else:
                     tool_response = json.dumps(result.data)
 
-                full_messages.append({
+                tool_msg = {
                     "role": "tool",
                     "tool_call_id": tool_call.id,
                     "content": tool_response,
-                })
+                }
+                full_messages.append(tool_msg)
+                if turn_messages is not None:
+                    turn_messages.append(tool_msg)
 
                 # When run_sql returns answer data, generate a chart separately
                 if result.artifact_type == "sql" and result.data and not result.error:
+                    has_called_run_sql = True
                     answer = result.data
                     answer_query = answer.get("query", "")
+
+                    if query_state_out is not None:
+                        query_state_out.append(_build_query_state(answer_query, answer))
 
                     yield self._sse("status", {"message": "Preparing chart..."})
                     chart = await self._build_chart_for_answer(
@@ -184,18 +307,19 @@ class Orchestrator:
                             "type": "chart",
                             "config": chart,
                         })
-                        yield self._sse("content", {
-                            "text": _format_artifact_summary(answer, chart),
-                        })
+                        content_text = _format_artifact_summary(answer, chart, user_question)
                     else:
-                        yield self._sse("content", {
-                            "text": _format_answer_only_summary(answer),
-                        })
+                        content_text = _format_answer_only_summary(answer, user_question)
+
+                    if turn_messages is not None:
+                        turn_messages.append({"role": "assistant", "content": content_text})
+                    yield self._sse("content", {"text": content_text})
 
                     yield self._sse("done", {})
                     return
 
                 elif result.error:
+                    sql_errors += 1
                     yield self._sse("status", {"message": "Checking the data..."})
 
         yield self._sse("content", {"text": "I couldn't complete that request."})
@@ -216,17 +340,27 @@ class Orchestrator:
         schema_text = await self._get_schema_for_query(answer_query, context)
         last_failed_sql: Optional[str] = None
         last_error: Optional[str] = None
+        attempted_chart_sql: set = set()
 
         for attempt in range(MAX_CHART_RECOVERY_ATTEMPTS):
-            chart_sql = await self._generate_chart_query(
+            chart_spec = await self._generate_chart_query(
                 user_question, answer_query, context, schema_text,
                 failed_sql=last_failed_sql,
                 failed_reason=last_error,
             )
-            if not chart_sql:
-                logger.warning("Chart LLM returned empty SQL")
+            if not chart_spec:
+                logger.warning("Chart LLM returned empty response")
                 last_error = "LLM returned empty response"
                 continue
+
+            chart_sql = chart_spec["query"]
+            normalized = _normalize_sql(chart_sql)
+            if normalized in attempted_chart_sql:
+                logger.info(f"Chart SQL (attempt {attempt + 1}): duplicate query, skipping")
+                last_failed_sql = chart_sql
+                last_error = "You generated the same query as a previous attempt. Write a different query."
+                continue
+            attempted_chart_sql.add(normalized)
 
             logger.info(f"Chart SQL (attempt {attempt + 1}): {chart_sql}")
 
@@ -240,6 +374,8 @@ class Orchestrator:
                 chart_result["columns"],
                 chart_result["rows"],
                 context.chart_preferences,
+                chart_type=chart_spec.get("chart_type"),
+                title=chart_spec.get("title"),
             )
             if chart_build.error:
                 logger.info(f"Chart validation failed (attempt {attempt + 1}): {chart_build.error}")
@@ -247,29 +383,15 @@ class Orchestrator:
                 last_error = chart_build.error
                 continue
 
-            chart = chart_build.chart
-            total_err = _chart_total_error(answer, chart)
-            if total_err:
-                logger.info(f"Chart total mismatch (attempt {attempt + 1}): {total_err}")
-                last_failed_sql = chart_sql
-                last_error = total_err
-                continue
-
-            return chart
+            return chart_build.chart
 
         logger.info("Chart generation exhausted retries, falling back to answer-only")
         return None
 
     async def _get_schema_for_query(self, query: str, context: Any) -> str:
-        """Fetch column info for tables referenced in the query."""
-        referenced = set(_TABLE_PATTERN.findall(query))
-        visible = set(context.visible_tables)
-        tables = referenced & visible
-        if not tables:
-            tables = visible
-
+        """Fetch column info for all visible tables so the chart LLM can JOIN as needed."""
         lines = []
-        for table_name in sorted(tables):
+        for table_name in sorted(context.visible_tables):
             try:
                 columns = await self._sql_engine.get_columns(table_name)
                 col_strs = [f"{c.name} ({c.data_type})" for c in columns]
@@ -286,8 +408,8 @@ class Orchestrator:
         schema_text: str,
         failed_sql: Optional[str] = None,
         failed_reason: Optional[str] = None,
-    ) -> Optional[str]:
-        """Ask the LLM (separate call) to produce a chart SQL query."""
+    ) -> Optional[dict]:
+        """Ask the LLM to produce a chart spec (SQL + chart_type + title)."""
         today = datetime.now().strftime("%Y-%m-%d")
 
         user_content = (
@@ -298,7 +420,7 @@ class Orchestrator:
         )
         if failed_sql and failed_reason:
             user_content += (
-                f"\n\nYour previous query was rejected:\n"
+                f"\n\nYour previous chart spec was rejected:\n"
                 f"  SQL: {failed_sql}\n"
                 f"  Error: {failed_reason}\n"
                 f"Write a different query that fixes this error."
@@ -310,7 +432,7 @@ class Orchestrator:
                 {"role": "user", "content": user_content},
             ])
             raw = response.choices[0].message.content or ""
-            return _extract_sql(raw) or None
+            return _parse_chart_response(raw)
         except Exception:
             logger.exception("Chart query generation LLM call failed")
             return None
@@ -321,6 +443,8 @@ class Orchestrator:
         context: Any,
     ) -> Optional[dict]:
         """Validate and execute a chart SQL query directly."""
+        sql = sql.replace(";", "")
+
         if self._safety:
             validation = self._safety.validate(sql)
             if not validation.is_safe:
@@ -358,6 +482,11 @@ class Orchestrator:
 # Helpers
 # ------------------------------------------------------------------
 
+def _normalize_sql(sql: str) -> str:
+    """Normalize SQL for dedup comparison."""
+    return " ".join(sql.lower().split())
+
+
 def _last_user_message(messages: List[dict]) -> str:
     for msg in reversed(messages):
         if msg.get("role") == "user":
@@ -373,28 +502,45 @@ def _tool_status(tool_name: str) -> str:
     return "Working..."
 
 
-def _format_artifact_summary(answer: dict, chart: dict) -> str:
+_BREAKDOWN_PATTERN = re.compile(
+    r"\b(?:by|per|for each|broken down by|grouped by)\s+(\w+)",
+    re.IGNORECASE,
+)
+
+
+def _dimensions_in_question(question: str) -> set[str]:
+    """Return lowercase dimension keywords the user already asked to break down by."""
+    return {m.group(1).lower() for m in _BREAKDOWN_PATTERN.finditer(question)}
+
+
+def _format_artifact_summary(answer: dict, chart: dict, user_question: str = "") -> str:
     return "\n\n".join([
         _format_answer_sentence(answer),
         _format_chart_sentence(chart),
-        "\n".join(_follow_up_lines(answer, chart)),
+        "\n".join(_follow_up_lines(answer, chart, user_question)),
     ])
 
 
-def _format_answer_only_summary(answer: dict | None) -> str:
+def _format_answer_only_summary(answer: dict | None, user_question: str = "") -> str:
     if not answer:
         return "I couldn't complete that request."
 
     return "\n\n".join([
         _format_answer_sentence(answer),
         "I couldn't prepare a chart for this answer.",
-        "\n".join([
-            "Suggested follow-ups:",
-            "- Compare this with the prior period.",
-            "- Break this down by location.",
-            "- Show revenue for the same period.",
-        ]),
+        "\n".join(_answer_only_follow_ups(user_question)),
     ])
+
+
+def _answer_only_follow_ups(user_question: str) -> list[str]:
+    asked = _dimensions_in_question(user_question)
+    lines = ["Suggested follow-ups:", "- Compare this with the prior period."]
+    if "location" not in asked:
+        lines.append("- Break this down by location.")
+    if "product" not in asked and "category" not in asked:
+        lines.append("- Break this down by product category.")
+    lines.append("- Show revenue for the same period.")
+    return lines
 
 
 def _format_answer_sentence(answer: dict) -> str:
@@ -418,16 +564,21 @@ def _format_chart_sentence(chart: dict) -> str:
     return f"A {chart_type} chart is included."
 
 
-def _follow_up_lines(answer: dict, chart: dict) -> list[str]:
+def _follow_up_lines(answer: dict, chart: dict, user_question: str = "") -> list[str]:
     metric = _metric_label(answer, chart).lower()
     secondary_metric = "orders" if "revenue" in metric else "revenue"
+    asked = _dimensions_in_question(user_question)
 
-    return [
+    lines = [
         "Suggested follow-ups:",
         f"- Compare {metric} with the prior period.",
-        f"- Break {metric} down by location.",
-        f"- Show {secondary_metric} for the same period.",
     ]
+    if "location" not in asked:
+        lines.append(f"- Break {metric} down by location.")
+    elif "product" not in asked and "category" not in asked:
+        lines.append(f"- Break {metric} down by product category.")
+    lines.append(f"- Show {secondary_metric} for the same period.")
+    return lines
 
 
 def _metric_label(answer: dict, chart: dict) -> str:
@@ -441,70 +592,6 @@ def _metric_label(answer: dict, chart: dict) -> str:
 
     return "this metric"
 
-
-def _chart_total_error(answer: dict | None, chart: dict) -> str | None:
-    answer_value = _single_answer_number(answer)
-    if answer_value is None:
-        return None
-
-    y_axis = chart.get("yAxis")
-    if not isinstance(y_axis, str) or not _is_additive_metric_name(y_axis):
-        return None
-
-    chart_values = [
-        value
-        for point in chart.get("data", [])
-        if isinstance(point, dict)
-        for value in [_coerce_number(point.get(y_axis))]
-        if value is not None
-    ]
-    if len(chart_values) < 2:
-        return None
-
-    chart_total = sum(chart_values)
-    tolerance = max(0.01, abs(answer_value) * 0.001)
-    if abs(chart_total - answer_value) <= tolerance:
-        return None
-
-    return (
-        f"chart values sum to {_format_value(chart_total)}, "
-        f"but the answer is {_format_value(answer_value)}"
-    )
-
-
-def _single_answer_number(answer: dict | None) -> float | None:
-    if not answer:
-        return None
-
-    rows = answer.get("rows", [])
-    if len(rows) != 1 or len(rows[0]) != 1:
-        return None
-    return _coerce_number(rows[0][0])
-
-
-def _is_additive_metric_name(name: str) -> bool:
-    lowered = name.lower()
-    if any(
-        keyword in lowered
-        for keyword in ("avg", "average", "rate", "ratio", "percent", "margin")
-    ):
-        return False
-
-    return any(
-        keyword in lowered
-        for keyword in (
-            "count",
-            "total",
-            "sum",
-            "orders",
-            "revenue",
-            "sales",
-            "members",
-            "customers",
-            "quantity",
-            "sold",
-        )
-    )
 
 
 def _coerce_number(value) -> float | None:
@@ -536,3 +623,114 @@ def _format_value(value) -> str:
 
 def _humanize_label(label: str) -> str:
     return label.replace("_", " ").strip().title()
+
+
+# ------------------------------------------------------------------
+# Query state capture
+# ------------------------------------------------------------------
+
+_WHERE_PATTERN = re.compile(
+    r"\bWHERE\s+(.+?)(?:\s+GROUP\b|\s+ORDER\b|\s+LIMIT\b|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+_LIMIT_PATTERN = re.compile(r"\bLIMIT\s+(\d+)", re.IGNORECASE)
+_ORDER_PATTERN = re.compile(
+    r"\bORDER\s+BY\s+(.+?)(?:\s+LIMIT\b|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_TIME_KEYWORDS = ("date", "day", "month", "year", "week", "period")
+_METRIC_KEYWORDS = (
+    "count", "sum", "avg", "total", "revenue",
+    "orders", "quantity", "amount", "sales",
+)
+
+
+def _is_time_column(col: str, values: list) -> bool:
+    if any(k in col for k in _TIME_KEYWORDS):
+        return True
+    return (
+        bool(values)
+        and isinstance(values[0], str)
+        and bool(re.match(r"\d{4}-\d{2}", str(values[0])))
+    )
+
+
+def _is_metric_column(col: str, values: list) -> bool:
+    if any(k in col for k in _METRIC_KEYWORDS):
+        return True
+    return (
+        bool(values)
+        and all(isinstance(v, (int, float)) for v in values if v is not None)
+    )
+
+
+def _extract_where_conditions(query: str) -> List[str]:
+    m = _WHERE_PATTERN.search(query)
+    if not m:
+        return []
+    return [c.strip() for c in re.split(r"\bAND\b", m.group(1), flags=re.IGNORECASE) if c.strip()]
+
+
+def _extract_limit(query: str) -> Optional[int]:
+    m = _LIMIT_PATTERN.search(query)
+    return int(m.group(1)) if m else None
+
+
+def _extract_order_by(query: str) -> List[str]:
+    m = _ORDER_PATTERN.search(query)
+    if not m:
+        return []
+    return [c.strip() for c in m.group(1).split(",") if c.strip()]
+
+
+def _build_query_state(query: str, result: dict) -> dict:
+    """Build structured query state from both the SQL query and result data."""
+    columns = result.get("columns", [])
+    rows = result.get("rows", [])
+
+    metrics: List[str] = []
+    dimensions: List[str] = []
+    time_grain: Optional[str] = None
+
+    for i, col in enumerate(columns):
+        sample = [row[i] for row in rows[:20] if i < len(row)]
+        col_lower = col.lower()
+
+        if _is_time_column(col_lower, sample):
+            if any(re.match(r"\d{4}-\d{2}$", str(v)) for v in sample if v):
+                time_grain = "month"
+            else:
+                time_grain = "day"
+            continue
+
+        if _is_metric_column(col_lower, sample):
+            metrics.append(col)
+        else:
+            dimensions.append(col)
+
+    return {
+        "metrics": metrics,
+        "dimensions": dimensions,
+        "time_grain": time_grain,
+        "filters": _extract_where_conditions(query),
+        "limit": _extract_limit(query),
+        "sort": _extract_order_by(query),
+    }
+
+
+def _format_query_state(state: dict) -> str:
+    """Format structured query state for injection into the user's message."""
+    lines = ["Previous query state:"]
+    lines.append(f"- metrics: {state.get('metrics', [])}")
+    lines.append(f"- dimensions: {state.get('dimensions', [])}")
+    if state.get("time_grain"):
+        lines.append(f"- time_grain: {state['time_grain']}")
+    if state.get("filters"):
+        lines.append(f"- filters: {state['filters']}")
+    if state.get("sort"):
+        lines.append(f"- sort: {state['sort']}")
+    if state.get("limit"):
+        lines.append(f"- limit: {state['limit']}")
+    lines.append("Preserve these dimensions unless the user's question implies a different grouping.")
+    return "\n".join(lines)

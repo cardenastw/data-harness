@@ -37,7 +37,7 @@ class RunSQLTool(BaseTool):
         self._max_rows = settings.sql_max_rows
 
     async def execute(self, arguments: dict, context: Any) -> ToolResult:
-        query = arguments.get("query", "").strip()
+        query = arguments.get("query", "").strip().replace(";", "")
 
         if not query:
             return ToolResult(error="No query provided")

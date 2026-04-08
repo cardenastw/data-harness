@@ -44,6 +44,11 @@ async def lifespan(app: FastAPI):
     tool_registry.register(GetSchemaTool(sql_engine, table_doc_manager))
     tool_registry.register(RunSQLTool(sql_engine, sql_safety, settings))
 
+    # Create session store
+    from app.harness.session_store import SessionStore
+
+    session_store = SessionStore()
+
     # Create orchestrator
     from app.harness.llm.client import LLMClient
     from app.harness.orchestrator import Orchestrator
@@ -65,6 +70,7 @@ async def lifespan(app: FastAPI):
 
     app.state.orchestrator = orchestrator
     app.state.context_manager = context_manager
+    app.state.session_store = session_store
 
     yield
 
