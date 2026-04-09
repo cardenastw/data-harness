@@ -30,10 +30,18 @@ export interface Artifact {
   config?: ChartConfig;
 }
 
+export interface TokenUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  llm_calls: number;
+}
+
 export interface Message {
   role: "user" | "assistant";
   content: string;
   artifacts?: Artifact[];
+  usage?: TokenUsage;
 }
 
 export interface ChatRequest {

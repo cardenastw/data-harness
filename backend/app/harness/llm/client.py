@@ -11,6 +11,15 @@ class LLMClient:
         self._client = AsyncOpenAI(base_url=base_url, api_key="ollama")
         self._model = model
 
+    @staticmethod
+    def extract_usage(response: ChatCompletion) -> tuple[int, int]:
+        """Return (prompt_tokens, completion_tokens), defaulting to 0 if absent."""
+        usage = getattr(response, "usage", None)
+        if usage:
+            return (getattr(usage, "prompt_tokens", 0) or 0,
+                    getattr(usage, "completion_tokens", 0) or 0)
+        return (0, 0)
+
     async def chat_completion(
         self,
         messages: List[dict],

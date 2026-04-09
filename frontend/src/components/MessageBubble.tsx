@@ -30,6 +30,12 @@ export default function MessageBubble({ message }: Props) {
           )}
         </div>
       ))}
+      {!isUser && message.usage && message.usage.total_tokens > 0 && (
+        <div className="usage-footer">
+          {message.usage.prompt_tokens.toLocaleString()} in / {message.usage.completion_tokens.toLocaleString()} out
+          {message.usage.llm_calls > 1 && ` · ${message.usage.llm_calls} calls`}
+        </div>
+      )}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import type { ChatRequest, ContextsResponse, Artifact } from "../types";
+import type { ChatRequest, ContextsResponse, Artifact, TokenUsage } from "../types";
 
 const API_BASE = "/api";
 
@@ -13,6 +13,7 @@ export interface StreamCallbacks {
   onStatus: (message: string) => void;
   onArtifact: (artifact: Artifact) => void;
   onContent: (text: string) => void;
+  onUsage?: (usage: TokenUsage) => void;
   onDone: () => void;
   onError: (error: string) => void;
 }
@@ -82,6 +83,9 @@ export async function sendMessageStream(
             break;
           case "content":
             callbacks.onContent(parsed.text);
+            break;
+          case "usage":
+            callbacks.onUsage?.(parsed);
             break;
           case "done":
             callbacks.onDone();

@@ -31,6 +31,7 @@ async def chat(req: ChatRequest, request: Request):
     session.messages.append({"role": "user", "content": req.message})
     turn_messages: list[dict] = []
     query_state_out: list = []
+    usage_out: list = []
 
     async def stream():
         # Emit session id so the frontend can use it for follow-ups
@@ -41,6 +42,7 @@ async def chat(req: ChatRequest, request: Request):
             turn_messages=turn_messages,
             query_state_out=query_state_out,
             prior_query_state=session.last_query_state,
+            usage_out=usage_out,
         ):
             yield chunk
 
@@ -48,6 +50,8 @@ async def chat(req: ChatRequest, request: Request):
         session.messages.extend(turn_messages)
         if query_state_out:
             session.last_query_state = query_state_out[0]
+        if usage_out:
+            session.accumulate_usage(usage_out[0])
 
     return StreamingResponse(
         stream(),

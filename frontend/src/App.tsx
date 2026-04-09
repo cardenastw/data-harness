@@ -4,7 +4,7 @@ import { sendMessageStream } from "./api/client";
 import ChatInput from "./components/ChatInput";
 import ChatWindow from "./components/ChatWindow";
 import ContextSelector from "./components/ContextSelector";
-import type { Message, Artifact } from "./types";
+import type { Message, Artifact, TokenUsage } from "./types";
 
 function App() {
   const [contextId, setContextId] = useState("marketing");
@@ -29,11 +29,12 @@ function App() {
     // Create a placeholder assistant message that we'll build up
     const streamArtifacts: Artifact[] = [];
     let streamContent = "";
+    let streamUsage: TokenUsage | undefined;
 
-    const addAssistantMessage = (content: string, artifacts: Artifact[]) => {
+    const addAssistantMessage = (content: string, artifacts: Artifact[], usage?: TokenUsage) => {
       setMessages([
         ...updatedMessages,
-        { role: "assistant", content, artifacts: [...artifacts] },
+        { role: "assistant", content, artifacts: [...artifacts], usage },
       ]);
     };
 
@@ -53,11 +54,15 @@ function App() {
           },
           onArtifact: (artifact) => {
             streamArtifacts.push(artifact);
-            addAssistantMessage(streamContent, streamArtifacts);
+            addAssistantMessage(streamContent, streamArtifacts, streamUsage);
           },
           onContent: (text) => {
             streamContent = text;
-            addAssistantMessage(streamContent, streamArtifacts);
+            addAssistantMessage(streamContent, streamArtifacts, streamUsage);
+          },
+          onUsage: (usage) => {
+            streamUsage = usage;
+            addAssistantMessage(streamContent, streamArtifacts, streamUsage);
           },
           onDone: () => {
             setIsLoading(false);

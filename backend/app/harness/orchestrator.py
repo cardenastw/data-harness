@@ -9,6 +9,7 @@ from numbers import Real
 from typing import TYPE_CHECKING, Any, AsyncGenerator, List, Optional
 
 from app.harness.charting import build_auto_chart
+from app.harness.llm.usage import TokenUsage
 
 if TYPE_CHECKING:
     from app.harness.context_manager import ContextManager
@@ -137,7 +138,12 @@ class Orchestrator:
         turn_messages: Optional[List[dict]] = None,
         query_state_out: Optional[list] = None,
         prior_query_state: Optional[dict] = None,
+        usage_out: Optional[list] = None,
     ) -> AsyncGenerator[str, None]:
+        from app.harness.llm.client import LLMClient
+
+        turn_usage = TokenUsage()
+
         context = self._context_manager.get(context_id)
         if context is None:
             yield self._sse("error", {"message": f"Unknown context: {context_id}"})
@@ -179,6 +185,8 @@ class Orchestrator:
             response = await self._llm.chat_completion(
                 full_messages, tools=tools, tool_choice=tool_choice,
             )
+            p, c = LLMClient.extract_usage(response)
+            turn_usage.add(p, c)
             choice = response.choices[0]
             message = choice.message
 
@@ -207,14 +215,20 @@ class Orchestrator:
                     yield self._sse("content", {
                         "text": "I wasn't able to retrieve that data. Could you try rephrasing your question?",
                     })
+                    yield self._sse("usage", turn_usage.to_dict())
                     yield self._sse("done", {})
+                    if usage_out is not None:
+                        usage_out.append(turn_usage.to_dict())
                     return
 
                 content = _strip_sql_from_content(message.content or "")
                 if turn_messages is not None:
                     turn_messages.append({"role": "assistant", "content": content})
                 yield self._sse("content", {"text": content})
+                yield self._sse("usage", turn_usage.to_dict())
                 yield self._sse("done", {})
+                if usage_out is not None:
+                    usage_out.append(turn_usage.to_dict())
                 return
 
             # Append assistant message with tool calls
@@ -293,7 +307,7 @@ class Orchestrator:
 
                     yield self._sse("status", {"message": "Preparing chart..."})
                     chart = await self._build_chart_for_answer(
-                        user_question, answer_query, answer, context,
+                        user_question, answer_query, answer, context, turn_usage,
                     )
 
                     yield self._sse("artifact", {
@@ -315,7 +329,10 @@ class Orchestrator:
                         turn_messages.append({"role": "assistant", "content": content_text})
                     yield self._sse("content", {"text": content_text})
 
+                    yield self._sse("usage", turn_usage.to_dict())
                     yield self._sse("done", {})
+                    if usage_out is not None:
+                        usage_out.append(turn_usage.to_dict())
                     return
 
                 elif result.error:
@@ -323,7 +340,10 @@ class Orchestrator:
                     yield self._sse("status", {"message": "Checking the data..."})
 
         yield self._sse("content", {"text": "I couldn't complete that request."})
+        yield self._sse("usage", turn_usage.to_dict())
         yield self._sse("done", {})
+        if usage_out is not None:
+            usage_out.append(turn_usage.to_dict())
 
     # ------------------------------------------------------------------
     # Chart generation (separate LLM call)
@@ -335,6 +355,7 @@ class Orchestrator:
         answer_query: str,
         answer: dict,
         context: Any,
+        usage: Optional[TokenUsage] = None,
     ) -> Optional[dict]:
         """Generate, execute, and validate a chart query. Returns chart config or None."""
         schema_text = await self._get_schema_for_query(answer_query, context)
@@ -347,6 +368,7 @@ class Orchestrator:
                 user_question, answer_query, context, schema_text,
                 failed_sql=last_failed_sql,
                 failed_reason=last_error,
+                usage=usage,
             )
             if not chart_spec:
                 logger.warning("Chart LLM returned empty response")
@@ -408,6 +430,7 @@ class Orchestrator:
         schema_text: str,
         failed_sql: Optional[str] = None,
         failed_reason: Optional[str] = None,
+        usage: Optional[TokenUsage] = None,
     ) -> Optional[dict]:
         """Ask the LLM to produce a chart spec (SQL + chart_type + title)."""
         today = datetime.now().strftime("%Y-%m-%d")
@@ -427,10 +450,15 @@ class Orchestrator:
             )
 
         try:
+            from app.harness.llm.client import LLMClient
+
             response = await self._llm.chat_completion([
                 {"role": "system", "content": CHART_QUERY_SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},
             ])
+            if usage is not None:
+                p, c = LLMClient.extract_usage(response)
+                usage.add(p, c)
             raw = response.choices[0].message.content or ""
             return _parse_chart_response(raw)
         except Exception:
