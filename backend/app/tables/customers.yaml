@@ -1,5 +1,10 @@
 name: customers
-description: "Registered customers"
+description: "Registered/online customers. In-person walk-ins without rewards live in `guests` (one row per order, not deduplicable)."
+notes:
+  - "Represents ONLINE / registered customers only. In-person walk-ins who don't scan a rewards card are stored in `guests` (one row per order, NOT deduplicable to a person)."
+  - "`is_test_user = 1` marks internal test accounts. Exclude unless asked. This flag must be checked IN ADDITION to `orders.is_test` when filtering test data."
 columns:
   preferred_location_id:
     description: "The location this customer visits most often (FK to locations)"
+  is_test_user:
+    description: "Marks an internal test account. Filter out by default."

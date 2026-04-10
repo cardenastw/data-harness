@@ -1,0 +1,11 @@
+name: guests
+description: "Anonymous walk-in records. One row per in-person order without a rewards scan. NOT deduplicable — the same real person visiting twice creates two rows."
+notes:
+  - "Do NOT use COUNT(DISTINCT guests.id) as a 'unique customers' count — that equals the number of walk-in orders, not the number of people. For unique-customer questions, count distinct `customers.id` from orders only and add an explicit caveat that walk-in guests cannot be deduplicated to people."
+  - "Linked from `orders.guest_id` only. NEVER linked from `cart_orders` (cart orders have no user linkage at all)."
+  - "`is_test_user = 1` marks test-generated walk-ins (e.g. QA sessions). Exclude unless asked. Must be checked in addition to `orders.is_test` and `customers.is_test_user` when filtering test data."
+columns:
+  location_id:
+    description: "FK to locations.id — the location where the walk-in occurred."
+  is_test_user:
+    description: "Marks a test-generated walk-in. Filter out by default."

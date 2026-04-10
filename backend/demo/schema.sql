@@ -23,16 +23,39 @@ CREATE TABLE IF NOT EXISTS customers (
     email TEXT UNIQUE,
     phone TEXT,
     first_order_date DATE NOT NULL,
-    preferred_location_id INTEGER REFERENCES locations(id)
+    preferred_location_id INTEGER REFERENCES locations(id),
+    is_test_user INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS guests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at DATETIME NOT NULL,
+    location_id INTEGER REFERENCES locations(id),
+    is_test_user INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     customer_id INTEGER REFERENCES customers(id),
+    guest_id INTEGER REFERENCES guests(id),
     location_id INTEGER NOT NULL REFERENCES locations(id),
     order_date DATETIME NOT NULL,
     order_type TEXT NOT NULL CHECK (order_type IN ('in_store', 'online_pickup')),
-    status TEXT NOT NULL DEFAULT 'completed' CHECK (status IN ('pending', 'completed', 'cancelled', 'refunded')),
+    status TEXT NOT NULL DEFAULT 'completed'
+        CHECK (status IN ('in_process', 'pending', 'completed', 'cancelled', 'refunded')),
+    is_test INTEGER NOT NULL DEFAULT 0,
+    subtotal REAL NOT NULL,
+    tax REAL NOT NULL,
+    total REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cart_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cart_name TEXT NOT NULL,
+    order_date DATETIME NOT NULL,
+    status TEXT NOT NULL DEFAULT 'completed'
+        CHECK (status IN ('in_process', 'completed', 'cancelled', 'refunded')),
+    is_test INTEGER NOT NULL DEFAULT 0,
     subtotal REAL NOT NULL,
     tax REAL NOT NULL,
     total REAL NOT NULL

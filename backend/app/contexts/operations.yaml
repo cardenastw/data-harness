@@ -37,6 +37,8 @@ chart_preferences:
 visible_tables:
   - locations
   - orders
+  - cart_orders
+  - guests
   - order_items
   - products
   - inventory

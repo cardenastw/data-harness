@@ -55,6 +55,14 @@ PRODUCTS = [
     ("Avocado Toast", "sandwich", None, 8.00, 2.50),
 ]
 
+CARTS = [
+    "Ferry Building Cart",
+    "Dolores Park Cart",
+    "Mission Farmers Market Cart",
+]
+
+CART_ITEM_PRICES = [3.50, 4.00, 4.50, 5.00, 5.50, 6.00, 6.50]
+
 CAMPAIGNS = [
     ("New Year Kickoff", "email", "2026-01-02", "2026-01-15", 2500.00, "all_customers", "completed"),
     ("Student Discount Week", "social_media", "2026-01-20", "2026-01-27", 1500.00, "students", "completed"),
@@ -76,7 +84,9 @@ def create_db(db_path: str) -> None:
         DROP TABLE IF EXISTS loyalty_program;
         DROP TABLE IF EXISTS inventory;
         DROP TABLE IF EXISTS order_items;
+        DROP TABLE IF EXISTS cart_orders;
         DROP TABLE IF EXISTS orders;
+        DROP TABLE IF EXISTS guests;
         DROP TABLE IF EXISTS campaigns;
         DROP TABLE IF EXISTS customers;
         DROP TABLE IF EXISTS products;
@@ -105,12 +115,17 @@ def create_db(db_path: str) -> None:
     for i in range(200):
         first_order = START_DATE + timedelta(days=random.randint(0, 80))
         preferred_loc = random.choice([1, 2, 3]) if random.random() < 0.7 else None
-        name = fake.name()
-        email = fake.unique.email()
+        is_test_user = 1 if random.random() < 0.02 else 0
+        if is_test_user:
+            name = f"Test User {i + 1}"
+            email = f"test_user_{i + 1}@example.test"
+        else:
+            name = fake.name()
+            email = fake.unique.email()
         phone = fake.phone_number() if random.random() < 0.6 else None
         cursor.execute(
-            "INSERT INTO customers (name, email, phone, first_order_date, preferred_location_id) VALUES (?, ?, ?, ?, ?)",
-            (name, email, phone, first_order.strftime("%Y-%m-%d"), preferred_loc),
+            "INSERT INTO customers (name, email, phone, first_order_date, preferred_location_id, is_test_user) VALUES (?, ?, ?, ?, ?, ?)",
+            (name, email, phone, first_order.strftime("%Y-%m-%d"), preferred_loc, is_test_user),
         )
         customer_ids.append(cursor.lastrowid)
 
@@ -118,6 +133,7 @@ def create_db(db_path: str) -> None:
     product_count = len(PRODUCTS)
     order_id = 0
     location_weights = [0.45, 0.35, 0.20]  # Downtown busiest
+    in_process_window_start = END_DATE - timedelta(days=4)  # last few days
 
     current = START_DATE
     while current <= END_DATE:
@@ -128,11 +144,19 @@ def create_db(db_path: str) -> None:
             order_id += 1
             location_id = random.choices([1, 2, 3], weights=location_weights)[0]
 
-            # Pick a customer (some orders are from walk-ins with no customer)
-            if random.random() < 0.7:
+            order_type = "online_pickup" if random.random() < 0.20 else "in_store"
+
+            # Identity branching:
+            # - online_pickup: always linked to a registered customer
+            # - in_store: ~35% scanned rewards (customer_id), rest are walk-ins (guest_id)
+            customer_id = None
+            guest_id = None
+            if order_type == "online_pickup":
                 customer_id = random.choice(customer_ids)
             else:
-                customer_id = None
+                if random.random() < 0.35:
+                    customer_id = random.choice(customer_ids)
+                # else: guest will be created below alongside the order
 
             # Time of day: morning peak, lunch peak, afternoon
             hour_weights = {
@@ -147,11 +171,14 @@ def create_db(db_path: str) -> None:
             minute = random.randint(0, 59)
             order_time = current.replace(hour=hour, minute=minute)
 
-            order_type = "online_pickup" if random.random() < 0.20 else "in_store"
+            # Test order flag (~1%); a small slice of these come from test customers
+            is_test = 1 if random.random() < 0.01 else 0
 
-            # Status
+            # Status — only in_process within the recent window so "open today" is realistic
             status_roll = random.random()
-            if status_roll < 0.02:
+            if current >= in_process_window_start and status_roll < 0.15:
+                status = "in_process"
+            elif status_roll < 0.02:
                 status = "refunded"
             elif status_roll < 0.07:
                 status = "cancelled"
@@ -175,9 +202,29 @@ def create_db(db_path: str) -> None:
             tax = round(subtotal * TAX_RATE, 2)
             total = round(subtotal + tax, 2)
 
+            # If this is a walk-in without rewards, create the guest row first
+            if customer_id is None and order_type == "in_store":
+                guest_is_test = is_test  # tag guest as test if the order is a test
+                cursor.execute(
+                    "INSERT INTO guests (created_at, location_id, is_test_user) VALUES (?, ?, ?)",
+                    (order_time.strftime("%Y-%m-%d %H:%M:%S"), location_id, guest_is_test),
+                )
+                guest_id = cursor.lastrowid
+
             cursor.execute(
-                "INSERT INTO orders (customer_id, location_id, order_date, order_type, status, subtotal, tax, total) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (customer_id, location_id, order_time.strftime("%Y-%m-%d %H:%M:%S"), order_type, status, subtotal, tax, total),
+                "INSERT INTO orders (customer_id, guest_id, location_id, order_date, order_type, status, is_test, subtotal, tax, total) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    customer_id,
+                    guest_id,
+                    location_id,
+                    order_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    order_type,
+                    status,
+                    is_test,
+                    subtotal,
+                    tax,
+                    total,
+                ),
             )
             actual_order_id = cursor.lastrowid
 
@@ -187,6 +234,51 @@ def create_db(db_path: str) -> None:
                     (actual_order_id, prod_id, qty, price, line_total),
                 )
 
+        current += timedelta(days=1)
+
+    # Seed cart_orders (mobile cart stands — no location_id, no items)
+    current = START_DATE
+    while current <= END_DATE:
+        is_weekend = current.weekday() >= 5
+        cart_count = random.randint(15, 25) if is_weekend else random.randint(5, 12)
+        for _ in range(cart_count):
+            cart_name = random.choice(CARTS)
+            hour = random.choices(
+                [9, 10, 11, 12, 13, 14, 15, 16],
+                weights=[5, 8, 10, 12, 10, 8, 6, 4],
+            )[0]
+            minute = random.randint(0, 59)
+            order_time = current.replace(hour=hour, minute=minute)
+
+            is_test = 1 if random.random() < 0.01 else 0
+
+            status_roll = random.random()
+            if current >= in_process_window_start and status_roll < 0.10:
+                status = "in_process"
+            elif status_roll < 0.03:
+                status = "cancelled"
+            elif status_roll < 0.04:
+                status = "refunded"
+            else:
+                status = "completed"
+
+            num_items = random.choices([1, 2, 3], weights=[55, 35, 10])[0]
+            subtotal = round(sum(random.choice(CART_ITEM_PRICES) for _ in range(num_items)), 2)
+            tax = round(subtotal * TAX_RATE, 2)
+            total = round(subtotal + tax, 2)
+
+            cursor.execute(
+                "INSERT INTO cart_orders (cart_name, order_date, status, is_test, subtotal, tax, total) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    cart_name,
+                    order_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    status,
+                    is_test,
+                    subtotal,
+                    tax,
+                    total,
+                ),
+            )
         current += timedelta(days=1)
 
     # Seed inventory
@@ -236,7 +328,18 @@ def create_db(db_path: str) -> None:
     conn.commit()
 
     # Print summary
-    for table in ["locations", "products", "customers", "orders", "order_items", "inventory", "campaigns", "loyalty_program"]:
+    for table in [
+        "locations",
+        "products",
+        "customers",
+        "guests",
+        "orders",
+        "order_items",
+        "cart_orders",
+        "inventory",
+        "campaigns",
+        "loyalty_program",
+    ]:
         count = cursor.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         print(f"  {table}: {count} rows")
 

@@ -20,6 +20,12 @@ RULES:
 3. ALWAYS alias every column with a readable name using AS.
 4. When the user asks for data "by X", "broken down by X", "per X", or "for each X", your SQL must \
 GROUP BY that dimension and return one row per group.
+5. Some tables carry `Notes:` describing relationships, required UNIONs/CTEs, test filters, and which \
+dimensions don't exist for which tables. Apply them. If the user asks to break data down by a dimension \
+that part of the data doesn't have (e.g. location for `cart_orders`), either bucket those rows under a \
+clearly labeled synthetic group (e.g. 'Mobile Cart') via UNION ALL, or exclude them with an explicit \
+caveat in the response — never invent values and never silently drop rows. When excluding test data, \
+check ALL test flags the notes mention (often spread across multiple tables).
 
 IMPORTANT SQLite syntax rules:
  - This is SQLite, NOT PostgreSQL. Do NOT use: DATE_TRUNC, INTERVAL, NOW(), EXTRACT(), ::date casts.
@@ -70,6 +76,7 @@ def context_gatherer_node(
         for table_name in context.visible_tables:
             table_doc = table_doc_manager.get(table_name)
             desc = f" — {table_doc.description}" if table_doc and table_doc.description else ""
+            notes = table_doc.notes if table_doc else []
             try:
                 columns = await sql_engine.get_columns(table_name)
                 col_strs = [f"{c.name} ({c.data_type})" for c in columns]
@@ -79,6 +86,11 @@ def context_gatherer_node(
             except Exception:
                 table_lines.append(f"  - {table_name}{desc}")
                 schema_lines.append(f"{table_name}: (schema unavailable)")
+
+            if notes:
+                table_lines.append("    Notes:")
+                for note in notes:
+                    table_lines.append(f"      * {note}")
 
         parts.append("\n".join(table_lines))
         system_prompt = "\n\n".join(parts)

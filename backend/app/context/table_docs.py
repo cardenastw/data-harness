@@ -18,6 +18,7 @@ class TableDoc:
     name: str
     description: str = ""
     columns: Dict[str, ColumnDoc] = field(default_factory=dict)
+    notes: List[str] = field(default_factory=list)
 
 
 class TableDocManager:
@@ -44,10 +45,24 @@ class TableDocManager:
                     values=col_raw.get("values", []),
                 )
 
+        notes_raw = raw.get("notes") or []
+        notes: List[str] = []
+        for entry in notes_raw:
+            if isinstance(entry, str):
+                notes.append(entry)
+            elif isinstance(entry, dict):
+                topic = entry.get("topic", "").strip()
+                guidance = entry.get("guidance", "").strip()
+                if topic and guidance:
+                    notes.append(f"{topic}: {guidance}")
+                elif guidance:
+                    notes.append(guidance)
+
         doc = TableDoc(
             name=raw["name"],
             description=raw.get("description", ""),
             columns=columns,
+            notes=notes,
         )
         self._docs[doc.name] = doc
 

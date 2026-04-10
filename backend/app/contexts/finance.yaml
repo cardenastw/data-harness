@@ -11,8 +11,8 @@ system_prompt: |
 
 metrics:
   - name: net_revenue
-    definition: "Total order value minus refunded orders"
-    sql_hint: "SUM(CASE WHEN status NOT IN ('refunded', 'cancelled') THEN total ELSE 0 END) FROM orders"
+    definition: "Total order value across orders + cart_orders, excluding refunded/cancelled/in_process and excluding test rows"
+    sql_hint: "SUM net across `orders` and `cart_orders` via UNION ALL, excluding status IN ('refunded','cancelled','in_process') and is_test = 1 on both sides; for orders, also exclude rows where the linked customer/guest is_test_user = 1"
 
   - name: average_order_value
     definition: "Net revenue divided by number of completed orders"
@@ -37,6 +37,7 @@ chart_preferences:
 
 visible_tables:
   - orders
+  - cart_orders
   - order_items
   - products
   - locations

@@ -1,13 +1,23 @@
 name: orders
-description: "Customer orders placed across all Brewed Awakening locations"
+description: "Customer orders placed at the 3 physical Brewed Awakening locations. Mobile cart stand orders live in `cart_orders` (separate table)."
+notes:
+  - "This table contains ONLY orders from the 3 physical locations. Orders from mobile cart stands live in `cart_orders` and have NO location_id. For 'total orders' or 'all orders' across the business, UNION ALL both tables."
+  - "`customer_id` and `guest_id` are mutually exclusive: exactly one is populated. `customer_id` is set when an online customer placed the order or scanned a rewards card in-store; `guest_id` is set for in-person walk-ins without rewards."
+  - "Test data lives in THREE places — exclude all three unless the user explicitly asks for test data: `orders.is_test = 1`, `customers.is_test_user = 1` (reach via `customer_id`), and `guests.is_test_user = 1` (reach via `guest_id`)."
+  - "`status = 'in_process'` means the order has been placed but not finalized. Exclude from revenue/sales metrics. Include it for order counts, open tickets, or fulfillment-status questions."
+  - "For 'unique customers' questions, only `customer_id` identifies a person. Walk-in `guest_id` rows cannot be deduplicated to people — call this out in the response and never use COUNT(DISTINCT guest_id) as a unique-customer count."
 columns:
   location_id:
     description: "Foreign key to locations.id — JOIN locations to get the location name"
   customer_id:
-    description: "Foreign key to customers.id — JOIN customers to get the customer name"
+    description: "Foreign key to customers.id — set for online orders and in-person rewards-scanned orders. Mutually exclusive with guest_id."
+  guest_id:
+    description: "Foreign key to guests.id — set for in-person walk-ins without a rewards scan. Mutually exclusive with customer_id."
+  is_test:
+    description: "Manually flagged test order. Exclude unless user asks for tests."
   order_type:
     description: "How the order was placed"
     values: ["in_store", "online_pickup"]
   status:
-    description: "Current order status"
-    values: ["pending", "completed", "cancelled", "refunded"]
+    description: "Current order status. 'in_process' means placed but not finalized — exclude from revenue."
+    values: ["in_process", "pending", "completed", "cancelled", "refunded"]

@@ -1,0 +1,16 @@
+name: cart_orders
+description: "Orders from mobile cart stands (Ferry Building, Dolores Park, Mission Farmers Market, etc.). Separate from the physical-location `orders` table."
+notes:
+  - "There is NO `location_id` — cart stands are not tracked as store locations. When grouping by location, bucket these rows under a synthetic label like 'Mobile Cart' via UNION ALL with `orders`."
+  - "There is NO item-level table for cart_orders. Per-product or per-category breakdowns are NOT possible for this data. Exclude it from product breakdowns and explicitly say so in the text response."
+  - "Has its own `is_test` flag. Cart orders have NO user/customer linkage — never attempt to join to customers or guests."
+  - "For 'total orders' or 'total revenue' across the business, UNION ALL with `orders`, filtering out test (is_test = 1) and in_process rows on BOTH sides."
+  - "`status = 'in_process'` means placed but not finalized. Exclude from revenue metrics."
+columns:
+  cart_name:
+    description: "Name of the cart stand. Use this for breakdowns by cart."
+  is_test:
+    description: "Manually flagged test order. Exclude unless user asks for tests."
+  status:
+    description: "Current order status. 'in_process' means placed but not finalized — exclude from revenue."
+    values: ["in_process", "completed", "cancelled", "refunded"]

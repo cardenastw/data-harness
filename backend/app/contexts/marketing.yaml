@@ -37,7 +37,9 @@ chart_preferences:
 
 visible_tables:
   - customers
+  - guests
   - orders
+  - cart_orders
   - order_items
   - products
   - campaigns
