@@ -1,4 +1,10 @@
-import type { Artifact, ContextsResponse, TokenUsage } from "../types";
+import type {
+  Artifact,
+  ContextsResponse,
+  DocResult,
+  LineageNode,
+  TokenUsage,
+} from "../types";
 
 const API_BASE = "/api";
 
@@ -10,6 +16,7 @@ export async function fetchContexts(): Promise<ContextsResponse> {
 
 interface ChatApiResponse {
   session_id: string;
+  question_type: "sql" | "docs" | "lineage" | null;
   sql: string | null;
   raw_data: {
     columns: string[];
@@ -20,6 +27,9 @@ interface ChatApiResponse {
   } | null;
   chart_json: Record<string, unknown> | null;
   suggestions: string[];
+  docs_results: DocResult[] | null;
+  lineage_node: LineageNode | null;
+  answer_text: string | null;
   usage: {
     turn: TokenUsage;
     session: TokenUsage;
@@ -87,8 +97,25 @@ export async function sendMessage(
     });
   }
 
+  if (data.docs_results && data.docs_results.length > 0) {
+    artifacts.push({
+      type: "docs",
+      docs: data.docs_results,
+    });
+  }
+
+  if (data.lineage_node) {
+    artifacts.push({
+      type: "lineage",
+      lineage: data.lineage_node,
+    });
+  }
+
   let content = "";
-  if (data.raw_data) {
+  if (data.answer_text) {
+    // docs / lineage path — server already wrote the natural-language answer.
+    content = data.answer_text;
+  } else if (data.raw_data) {
     const { row_count, columns } = data.raw_data;
     content = `Query returned ${row_count} row${row_count !== 1 ? "s" : ""} with ${columns.length} column${columns.length !== 1 ? "s" : ""}.`;
   } else {

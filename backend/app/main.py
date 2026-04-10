@@ -32,6 +32,28 @@ async def lifespan(app: FastAPI):
     table_doc_manager = TableDocManager(tables_dir=Path(settings.tables_dir))
     table_doc_manager.load_all()
 
+    # Load business docs (markdown) for the docs lookup tool
+    from app.context.docs_store import DocStore
+
+    doc_store = DocStore(docs_dir=Path(settings.docs_dir))
+    doc_store.load_all()
+    logging.getLogger(__name__).info(
+        "Loaded %d business doc(s) from %s", len(doc_store.all()), settings.docs_dir
+    )
+
+    # Load lineage YAML for the lineage lookup tool
+    from app.context.lineage_store import LineageStore
+
+    lineage_store = LineageStore(lineage_file=Path(settings.lineage_file))
+    lineage_store.load()
+    _known = lineage_store.list_subjects()
+    logging.getLogger(__name__).info(
+        "Loaded lineage: %d metric(s), %d column(s), %d table(s)",
+        len(_known["metrics"]),
+        len(_known["columns"]),
+        len(_known["tables"]),
+    )
+
     # Safety validator
     from app.sql.safety import SQLSafetyValidator
 
@@ -61,6 +83,8 @@ async def lifespan(app: FastAPI):
         safety=safety,
         context_manager=context_manager,
         table_doc_manager=table_doc_manager,
+        doc_store=doc_store,
+        lineage_store=lineage_store,
         timeout=settings.sql_query_timeout,
         max_rows=settings.sql_max_rows,
         max_sql_retries=settings.max_sql_retries,

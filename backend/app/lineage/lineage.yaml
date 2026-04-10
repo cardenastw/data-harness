@@ -1,0 +1,155 @@
+# Lineage reference for Brewed Awakening metrics, columns, and tables.
+#
+# Three top-level sections: metrics, columns, tables.
+# Lookup is case-insensitive against the keys below.
+
+metrics:
+  net_revenue:
+    formula: "SUM(orders.total) WHERE orders.status NOT IN ('refunded','cancelled')"
+    upstream_tables: [orders]
+    upstream_columns: [orders.total, orders.status]
+    contexts: [finance]
+    notes: "Tax-inclusive (orders.total = subtotal + tax). Use orders.subtotal for tax-exclusive."
+
+  average_order_value:
+    formula: "AVG(orders.total) WHERE orders.status = 'completed'"
+    upstream_tables: [orders]
+    upstream_columns: [orders.total, orders.status]
+    contexts: [finance]
+    notes: "Per-order figure. Filters to completed orders only."
+
+  product_margin:
+    formula: "(products.price - products.cost) / products.price * 100"
+    upstream_tables: [products]
+    upstream_columns: [products.price, products.cost]
+    contexts: [finance]
+    notes: "Per-product percentage. Aggregate by category for category margin."
+
+  cost_ratio:
+    formula: "SUM(order_items.quantity * products.cost) / SUM(orders.total) WHERE orders.status = 'completed'"
+    upstream_tables: [order_items, products, orders]
+    upstream_columns: [order_items.quantity, products.cost, orders.total, orders.status]
+    contexts: [finance]
+    notes: "Total cost of goods sold over total revenue."
+
+  customer_acquisition_cost:
+    formula: "SUM(campaigns.budget) / COUNT(DISTINCT customers.id) WHERE customers.first_order_date BETWEEN campaigns.start_date AND campaigns.end_date"
+    upstream_tables: [campaigns, customers]
+    upstream_columns: [campaigns.budget, campaigns.start_date, campaigns.end_date, customers.id, customers.first_order_date]
+    contexts: [marketing]
+    notes: "Date-based attribution — overlapping campaigns share credit."
+
+  customer_lifetime_value:
+    formula: "AVG(SUM(orders.total) PER customer_id)"
+    upstream_tables: [orders, customers]
+    upstream_columns: [orders.total, orders.customer_id]
+    contexts: [marketing]
+    notes: "Average lifetime spend per customer. Uses gross totals (no status filter)."
+
+  loyalty_redemption_rate:
+    formula: "SUM(loyalty_program.points_redeemed) * 100.0 / SUM(loyalty_program.points_earned)"
+    upstream_tables: [loyalty_program]
+    upstream_columns: [loyalty_program.points_redeemed, loyalty_program.points_earned]
+    contexts: [marketing]
+    notes: "Percentage of earned points actually redeemed."
+
+  repeat_customer_rate:
+    formula: "COUNT(customers WITH order_count > 1) * 100.0 / COUNT(customers)"
+    upstream_tables: [orders, customers]
+    upstream_columns: [orders.customer_id, customers.id]
+    contexts: [marketing]
+    notes: "Percentage of customers with more than one order."
+
+  fulfillment_rate:
+    formula: "COUNT(orders WHERE status='completed') * 100.0 / COUNT(orders)"
+    upstream_tables: [orders]
+    upstream_columns: [orders.status]
+    contexts: [operations]
+    notes: "Of all placed orders, what fraction were completed."
+
+  average_items_per_order:
+    formula: "AVG(item_count) FROM (SELECT order_id, COUNT(*) FROM order_items GROUP BY order_id)"
+    upstream_tables: [order_items]
+    upstream_columns: [order_items.order_id]
+    contexts: [operations]
+    notes: "Per-order line item count, averaged across orders."
+
+  stock_below_reorder:
+    formula: "COUNT(inventory WHERE quantity_on_hand < reorder_level)"
+    upstream_tables: [inventory]
+    upstream_columns: [inventory.quantity_on_hand, inventory.reorder_level]
+    contexts: [operations]
+    notes: "Number of (location, product) pairs needing restock."
+
+  online_pickup_rate:
+    formula: "COUNT(orders WHERE order_type='online_pickup') * 100.0 / COUNT(orders)"
+    upstream_tables: [orders]
+    upstream_columns: [orders.order_type]
+    contexts: [operations]
+    notes: "Share of orders coming from the online pickup channel."
+
+columns:
+  orders.total:
+    derived_from: [orders.subtotal, orders.tax]
+    formula: "subtotal + tax"
+    notes: "Tax-inclusive order amount. Stored, not computed at query time."
+
+  orders.subtotal:
+    derived_from: [order_items.line_total]
+    formula: "SUM(order_items.line_total) for the order"
+    notes: "Pre-tax merchandise total."
+
+  order_items.line_total:
+    derived_from: [order_items.unit_price, order_items.quantity]
+    formula: "unit_price * quantity"
+
+  loyalty_program.tier:
+    derived_from: [loyalty_program.points_earned]
+    formula: "bronze if <500, silver if <2000, gold otherwise"
+    notes: "Tier is calculated from lifetime points earned, not current balance."
+
+tables:
+  locations:
+    source_system: "Store Master (manual entry)"
+    refresh_cadence: "on store open/close"
+    primary_key: id
+    notes: "Authoritative list of physical locations."
+
+  products:
+    source_system: "Menu CMS"
+    refresh_cadence: "weekly"
+    primary_key: id
+
+  customers:
+    source_system: "Loyalty CRM"
+    refresh_cadence: "real-time"
+    primary_key: id
+    notes: "Walk-ins without accounts do not appear here."
+
+  orders:
+    source_system: "POS"
+    refresh_cadence: "real-time (within 60s)"
+    primary_key: id
+    notes: "Refunds and cancellations mutate the row in place; no separate refunds table."
+
+  order_items:
+    source_system: "POS"
+    refresh_cadence: "real-time (within 60s)"
+    primary_key: id
+
+  inventory:
+    source_system: "Warehouse Management System"
+    refresh_cadence: "every 15 minutes"
+    primary_key: id
+    notes: "Snapshot, not history. There is no inventory_history table."
+
+  campaigns:
+    source_system: "Marketing Hub"
+    refresh_cadence: "manual entry by marketing"
+    primary_key: id
+
+  loyalty_program:
+    source_system: "Loyalty CRM"
+    refresh_cadence: "real-time"
+    primary_key: id
+    notes: "Running totals only — no per-transaction points ledger."

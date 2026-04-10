@@ -28,6 +28,8 @@ export default function ChatWindow({ messages, isLoading, statusText }: Props) {
               <li>"What are our top selling products?"</li>
               <li>"Show me revenue by location"</li>
               <li>"Which products have low inventory?"</li>
+              <li>"What does net revenue mean?"</li>
+              <li>"Where does customer_lifetime_value come from?"</li>
             </ul>
           </div>
         </div>

@@ -28,6 +28,23 @@ class GraphState(TypedDict, total=False):
     chart_json: Optional[dict]  # Recharts-compatible chart config
     suggestions: list[str]  # Follow-up question suggestions
 
+    # Routing — set by router_node, drives the conditional edge after the router.
+    # "sql" (default) routes through the existing SQL pipeline. "docs" and
+    # "lineage" route through the new lookup+answer subgraphs.
+    question_type: str  # "sql" | "docs" | "lineage"
+    routing_subject: str  # search query for docs / canonical name for lineage
+
+    # Docs path outputs
+    docs_results: Optional[list[dict]]  # [{path, title, snippet, content}]
+
+    # Lineage path outputs
+    lineage_node: Optional[dict]  # {kind, name, formula?, upstream_tables?, ...}
+    lineage_known: Optional[dict]  # {metrics: [...], columns: [...], tables: [...]} on miss
+
+    # Natural-language answer composed by docs_answer / lineage_answer nodes.
+    # SQL path leaves this empty — the chat route falls back to its row-count text.
+    answer_text: Optional[str]
+
     # Token usage — list of {prompt_tokens, completion_tokens} per LLM call.
     # Annotated with `add` so parallel nodes (visualization + strategist) merge
     # via list concatenation instead of raising InvalidUpdateError.

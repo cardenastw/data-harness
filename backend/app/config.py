@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     max_sql_retries: int = 3
     contexts_dir: str = "app/contexts"
     tables_dir: str = "app/tables"
+    docs_dir: str = "app/docs"
+    lineage_file: str = "app/lineage/lineage.yaml"
 
     model_config = {"env_prefix": "", "case_sensitive": False}
 

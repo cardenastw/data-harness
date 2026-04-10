@@ -7,7 +7,12 @@ from typing import Any, Literal, Sequence
 from langgraph.graph import END, StateGraph
 
 from app.graph.nodes.context_gatherer import context_gatherer_node
+from app.graph.nodes.docs_answer import docs_answer_node
+from app.graph.nodes.docs_lookup import docs_lookup_node
 from app.graph.nodes.executor import executor_node
+from app.graph.nodes.lineage_answer import lineage_answer_node
+from app.graph.nodes.lineage_lookup import lineage_lookup_node
+from app.graph.nodes.router import router_node
 from app.graph.nodes.sql_generator import sql_generator_node
 from app.graph.nodes.strategist import strategist_node
 from app.graph.nodes.validator import validator_node
@@ -24,14 +29,27 @@ class WorkflowDeps:
     safety: Any
     context_manager: Any
     table_doc_manager: Any
+    doc_store: Any
+    lineage_store: Any
     timeout: float = 30.0
     max_rows: int = 500
     max_sql_retries: int = 3
 
 
-def _route_after_context(state: GraphState) -> Literal["sql_generator", "__end__"]:
+def _route_after_context(state: GraphState) -> Literal["router", "__end__"]:
     if state.get("error"):
         return "__end__"
+    return "router"
+
+
+def _route_after_router(
+    state: GraphState,
+) -> Literal["sql_generator", "docs_lookup", "lineage_lookup"]:
+    qtype = state.get("question_type", "sql")
+    if qtype == "docs":
+        return "docs_lookup"
+    if qtype == "lineage":
+        return "lineage_lookup"
     return "sql_generator"
 
 
@@ -59,7 +77,7 @@ def _route_after_execution(
 def build_workflow(deps: WorkflowDeps) -> Any:
     graph = StateGraph(GraphState)
 
-    # Register nodes
+    # Existing SQL pipeline nodes (unchanged)
     graph.add_node(
         "context_gatherer",
         context_gatherer_node(deps.sql_engine, deps.context_manager, deps.table_doc_manager),
@@ -76,14 +94,29 @@ def build_workflow(deps: WorkflowDeps) -> Any:
     )
     graph.add_node("strategist", strategist_node(deps.llm_client))
 
+    # Router + new branches
+    graph.add_node("router", router_node(deps.llm_client))
+    graph.add_node("docs_lookup", docs_lookup_node(deps.doc_store))
+    graph.add_node("docs_answer", docs_answer_node(deps.llm_client))
+    graph.add_node("lineage_lookup", lineage_lookup_node(deps.lineage_store))
+    graph.add_node("lineage_answer", lineage_answer_node(deps.llm_client))
+
     # Wire edges
     graph.set_entry_point("context_gatherer")
     graph.add_conditional_edges("context_gatherer", _route_after_context)
+    # Router dispatches to one of three subgraphs
+    graph.add_conditional_edges("router", _route_after_router)
+    # Existing SQL path (unchanged)
     graph.add_edge("sql_generator", "validator")
     graph.add_conditional_edges("validator", _route_after_validation)
     graph.add_conditional_edges("executor", _route_after_execution)
     graph.add_edge("visualization", END)
     graph.add_edge("strategist", END)
+    # New paths
+    graph.add_edge("docs_lookup", "docs_answer")
+    graph.add_edge("docs_answer", END)
+    graph.add_edge("lineage_lookup", "lineage_answer")
+    graph.add_edge("lineage_answer", END)
 
     compiled = graph.compile()
 

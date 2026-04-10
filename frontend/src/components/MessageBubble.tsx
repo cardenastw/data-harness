@@ -1,6 +1,8 @@
 import type { Message } from "../types";
 import ChartRenderer from "./ChartRenderer";
 import DataTable from "./DataTable";
+import DocsBlock from "./DocsBlock";
+import LineageBlock from "./LineageBlock";
 import SqlBlock from "./SqlBlock";
 
 interface Props {
@@ -27,6 +29,12 @@ export default function MessageBubble({ message }: Props) {
           )}
           {artifact.type === "chart" && artifact.config && (
             <ChartRenderer config={artifact.config} />
+          )}
+          {artifact.type === "docs" && artifact.docs && (
+            <DocsBlock docs={artifact.docs} />
+          )}
+          {artifact.type === "lineage" && artifact.lineage && (
+            <LineageBlock lineage={artifact.lineage} />
           )}
         </div>
       ))}

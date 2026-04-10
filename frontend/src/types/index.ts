@@ -23,11 +23,34 @@ export interface ChartConfig {
   colors?: string[];
 }
 
+export interface DocResult {
+  path: string;
+  title: string;
+  snippet: string;
+  content: string;
+}
+
+export interface LineageNode {
+  kind: "metric" | "column" | "table";
+  name: string;
+  formula?: string;
+  upstream_tables?: string[];
+  upstream_columns?: string[];
+  derived_from?: string[];
+  source_system?: string;
+  refresh_cadence?: string;
+  primary_key?: string;
+  contexts?: string[];
+  notes?: string;
+}
+
 export interface Artifact {
-  type: "sql" | "chart";
+  type: "sql" | "chart" | "docs" | "lineage";
   query?: string;
   result?: QueryResult;
   config?: ChartConfig;
+  docs?: DocResult[];
+  lineage?: LineageNode;
 }
 
 export interface TokenUsage {
