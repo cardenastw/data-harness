@@ -1,10 +1,10 @@
 import { useState } from "react";
 import "./App.css";
-import { sendMessageStream } from "./api/client";
+import { sendMessage } from "./api/client";
 import ChatInput from "./components/ChatInput";
 import ChatWindow from "./components/ChatWindow";
 import ContextSelector from "./components/ContextSelector";
-import type { Message, Artifact, TokenUsage } from "./types";
+import type { Message } from "./types";
 
 function App() {
   const [contextId, setContextId] = useState("marketing");
@@ -24,63 +24,35 @@ function App() {
     const updatedMessages = [...messages, userMessage];
     setMessages(updatedMessages);
     setIsLoading(true);
-    setStatusText("Thinking...");
-
-    // Create a placeholder assistant message that we'll build up
-    const streamArtifacts: Artifact[] = [];
-    let streamContent = "";
-    let streamUsage: TokenUsage | undefined;
-
-    const addAssistantMessage = (content: string, artifacts: Artifact[], usage?: TokenUsage) => {
-      setMessages([
-        ...updatedMessages,
-        { role: "assistant", content, artifacts: [...artifacts], usage },
-      ]);
-    };
+    setStatusText("Running workflow...");
 
     try {
-      await sendMessageStream(
+      const result = await sendMessage(
+        content,
+        sessionId ?? undefined,
+        sessionId ? undefined : contextId,
+      );
+      setSessionId(result.sessionId);
+
+      setMessages([
+        ...updatedMessages,
         {
-          message: content,
-          session_id: sessionId ?? undefined,
-          context_id: sessionId ? undefined : contextId,
+          role: "assistant",
+          content: result.content,
+          artifacts: result.artifacts,
+          suggestions: result.suggestions,
+          usage: result.usage,
         },
-        {
-          onSession: (id) => {
-            setSessionId(id);
-          },
-          onStatus: (message) => {
-            setStatusText(message);
-          },
-          onArtifact: (artifact) => {
-            streamArtifacts.push(artifact);
-            addAssistantMessage(streamContent, streamArtifacts, streamUsage);
-          },
-          onContent: (text) => {
-            streamContent = text;
-            addAssistantMessage(streamContent, streamArtifacts, streamUsage);
-          },
-          onUsage: (usage) => {
-            streamUsage = usage;
-            addAssistantMessage(streamContent, streamArtifacts, streamUsage);
-          },
-          onDone: () => {
-            setIsLoading(false);
-            setStatusText("");
-          },
-          onError: (error) => {
-            streamContent = `Error: ${error}`;
-            addAssistantMessage(streamContent, streamArtifacts);
-            setIsLoading(false);
-            setStatusText("");
-          },
-        }
-      );
+      ]);
     } catch (error) {
-      addAssistantMessage(
-        `Error: ${error instanceof Error ? error.message : "Something went wrong"}`,
-        []
-      );
+      setMessages([
+        ...updatedMessages,
+        {
+          role: "assistant",
+          content: `Error: ${error instanceof Error ? error.message : "Something went wrong"}`,
+        },
+      ]);
+    } finally {
       setIsLoading(false);
       setStatusText("");
     }
@@ -91,7 +63,10 @@ function App() {
       <header className="app-header">
         <h1>Brewed Awakening</h1>
         <span className="app-subtitle">Data Assistant</span>
-        <ContextSelector selectedId={contextId} onChange={handleContextChange} />
+        <ContextSelector
+          selectedId={contextId}
+          onChange={handleContextChange}
+        />
       </header>
       <ChatWindow
         messages={messages}

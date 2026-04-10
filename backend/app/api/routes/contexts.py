@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Request
 
 from app.api.schemas import ContextOut, ContextsResponse
-from app.harness.context_manager import ContextManager
+from app.context.manager import ContextManager
 
 router = APIRouter()
 

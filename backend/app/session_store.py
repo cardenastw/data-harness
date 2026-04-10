@@ -11,16 +11,15 @@ class Session:
     id: str
     context_id: str
     messages: List[dict] = field(default_factory=list)
-    last_query_state: Optional[dict] = field(default=None)
     created_at: datetime = field(default_factory=datetime.now)
     total_prompt_tokens: int = 0
     total_completion_tokens: int = 0
     total_llm_calls: int = 0
 
-    def accumulate_usage(self, usage: dict) -> None:
-        self.total_prompt_tokens += usage.get("prompt_tokens", 0)
-        self.total_completion_tokens += usage.get("completion_tokens", 0)
-        self.total_llm_calls += usage.get("llm_calls", 0)
+    def accumulate_usage(self, turn_usage: dict) -> None:
+        self.total_prompt_tokens += turn_usage.get("prompt_tokens", 0)
+        self.total_completion_tokens += turn_usage.get("completion_tokens", 0)
+        self.total_llm_calls += turn_usage.get("llm_calls", 0)
 
 
 class SessionStore:

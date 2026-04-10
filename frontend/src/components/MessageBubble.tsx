@@ -30,6 +30,16 @@ export default function MessageBubble({ message }: Props) {
           )}
         </div>
       ))}
+      {!isUser && message.suggestions && message.suggestions.length > 0 && (
+        <div className="suggestions-footer">
+          <span className="suggestions-label">Follow-up ideas:</span>
+          <ul>
+            {message.suggestions.map((s, i) => (
+              <li key={i}>{s}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       {!isUser && message.usage && message.usage.total_tokens > 0 && (
         <div className="usage-footer">
           {message.usage.prompt_tokens.toLocaleString()} in / {message.usage.completion_tokens.toLocaleString()} out

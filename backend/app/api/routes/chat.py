@@ -1,18 +1,14 @@
-import json
-
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
 
-from app.api.schemas import ChatRequest
-from app.harness.orchestrator import Orchestrator
-from app.harness.session_store import SessionStore
+from app.api.schemas import ChatRequest, ChatResponse
+from app.session_store import SessionStore
 
 router = APIRouter()
 
 
-@router.post("/chat")
+@router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, request: Request):
-    orchestrator: Orchestrator = request.app.state.orchestrator
+    workflow = request.app.state.workflow
     session_store: SessionStore = request.app.state.session_store
 
     # Look up existing session or create a new one
@@ -27,37 +23,62 @@ async def chat(req: ChatRequest, request: Request):
             )
         session = session_store.create(req.context_id)
 
-    # Append the new user message to session history
+    # Append user message to session history
     session.messages.append({"role": "user", "content": req.message})
-    turn_messages: list[dict] = []
-    query_state_out: list = []
-    usage_out: list = []
 
-    async def stream():
-        # Emit session id so the frontend can use it for follow-ups
-        yield f"event: session\ndata: {json.dumps({'session_id': session.id})}\n\n"
+    initial_state = {
+        "user_question": req.message,
+        "context_id": session.context_id,
+        "session_messages": session.messages[:-1],  # prior history (current question sent separately)
+    }
 
-        async for chunk in orchestrator.run_stream(
-            session.messages, session.context_id,
-            turn_messages=turn_messages,
-            query_state_out=query_state_out,
-            prior_query_state=session.last_query_state,
-            usage_out=usage_out,
-        ):
-            yield chunk
+    result = await workflow.ainvoke(initial_state)
 
-        # Persist the canonical messages from this turn (tool calls + results)
-        session.messages.extend(turn_messages)
-        if query_state_out:
-            session.last_query_state = query_state_out[0]
-        if usage_out:
-            session.accumulate_usage(usage_out[0])
+    # Persist assistant response in session for follow-ups
+    sql = result.get("generated_sql")
+    raw_data = result.get("raw_data")
+    error = result.get("error")
 
-    return StreamingResponse(
-        stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
+    if error:
+        assistant_content = f"Error: {error}"
+    elif raw_data:
+        row_count = raw_data.get("row_count", 0)
+        assistant_content = f"Query returned {row_count} row{'s' if row_count != 1 else ''}."
+        if sql:
+            assistant_content = f"SQL: {sql}\n{assistant_content}"
+    else:
+        assistant_content = "No results returned."
+
+    session.messages.append({"role": "assistant", "content": assistant_content})
+
+    # Sum per-call usage entries collected by the nodes into a single turn total.
+    turn_entries = result.get("token_usage", []) or []
+    turn_prompt = sum(e.get("prompt_tokens", 0) for e in turn_entries)
+    turn_completion = sum(e.get("completion_tokens", 0) for e in turn_entries)
+    turn_usage = {
+        "prompt_tokens": turn_prompt,
+        "completion_tokens": turn_completion,
+        "total_tokens": turn_prompt + turn_completion,
+        "llm_calls": len(turn_entries),
+    }
+    session.accumulate_usage(turn_usage)
+
+    usage_payload = {
+        "turn": turn_usage,
+        "session": {
+            "prompt_tokens": session.total_prompt_tokens,
+            "completion_tokens": session.total_completion_tokens,
+            "total_tokens": session.total_prompt_tokens + session.total_completion_tokens,
+            "llm_calls": session.total_llm_calls,
         },
+    }
+
+    return ChatResponse(
+        session_id=session.id,
+        sql=sql,
+        raw_data=raw_data,
+        chart_json=result.get("chart_json"),
+        suggestions=result.get("suggestions", []),
+        usage=usage_payload,
+        error=error,
     )

@@ -42,17 +42,13 @@ export interface Message {
   content: string;
   artifacts?: Artifact[];
   usage?: TokenUsage;
+  suggestions?: string[];
 }
 
 export interface ChatRequest {
   message: string;
   session_id?: string;
   context_id?: string;
-}
-
-export interface ChatResponse {
-  message: { role: string; content: string };
-  artifacts: Artifact[];
 }
 
 export interface ContextsResponse {

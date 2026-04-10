@@ -5,3 +5,4 @@ aiosqlite==0.20.0
 pyyaml==6.0.2
 faker==33.1.0
 pydantic-settings==2.7.1
+langgraph>=0.2.0

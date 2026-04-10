@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     database_path: str = "demo/coffee_shop.db"
     sql_query_timeout: float = 30.0
     sql_max_rows: int = 500
-    max_tool_iterations: int = 10
+    max_sql_retries: int = 3
     contexts_dir: str = "app/contexts"
     tables_dir: str = "app/tables"
 
