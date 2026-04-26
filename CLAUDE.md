@@ -25,3 +25,14 @@ When creating a rewrite or parallel implementation of an existing service, audit
 - Python venv lives at `backend/venv` — use it, don't create new ones
 - Docker: `docker compose up` runs backend, frontend, and ollama
 - The backend is a LangGraph workflow over Ollama; chat endpoint is `POST /api/chat` (single JSON response, not streaming)
+
+## Learnings
+
+- **LangGraph `Send` only injects state into its first destination.** Subsequent nodes via `add_edge` don't see Send-payload-only fields like `_current_subtask`. For per-subtask scope across a chain, collapse the chain into a single runner node. See `backend/app/graph/nodes/subtask_runners.py` and `docs/sessions/2026-04-26-multi-subtask-workflow.md`.
+- **LangGraph drops state fields not declared on the `GraphState` schema.** Pass workflow config (e.g. `max_retries`) via closure at build time, not by mutating the input state dict.
+- **For multi-write list state in LangGraph, use a custom merge-by-id reducer**, not `operator.add`. Append-style reducers create duplicate entries when retry loops re-enter the same logical record. See `merge_subtasks_by_id` in `backend/app/graph/state.py`.
+- **Validator regex flagged CTEs as unauthorized tables.** SQL access checks must extract CTE names (`\b(\w+)\s+AS\s*\(\s*(?:SELECT|WITH|VALUES)\b`) and exclude them before comparing references against `visible_tables`. Same pattern lives in `validator.py` and `visualization.py`.
+- **Validator errors must echo the allowed-tables list.** Without it, small models just hallucinate a different fake name on retry.
+- **Synthesizer prompts must explicitly forbid bracket-style placeholders** (`[X]`, `[amount from s1]`, `[query result]`). Models will echo bracket conventions back as fillable templates if the format uses them. Use natural-language labels (`Subtask 1`) and `STATUS: OK/FAILED` lines instead.
+- **After editing backend code, redeploy with `docker compose up -d --build --force-recreate backend`.** Plain `up` (even with `--build`) often keeps the old container alive. Verify with `docker exec ai-harness-backend-1 grep <signature> /app/...` before debugging behavior.
+- **Default model is `qwen2.5:3b` — small and frequently emits Postgres syntax** despite explicit "this is SQLite" rules in the system prompt. Targeted retry hints in `sql_generator.py` cover the common offenders (`::` casts, `DATE_TRUNC`/`EXTRACT`/`NOW`/`INTERVAL`, `:name` params, `= ANY`/`= ALL`, UNION column-count). Stronger models (`qwen2.5:7b+`) reduce the need for these dramatically.
