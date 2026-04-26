@@ -2,24 +2,30 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Literal, Sequence
+from typing import Any, Literal
 
 from langgraph.graph import END, StateGraph
+from langgraph.types import Send
 
 from app.graph.nodes.context_gatherer import context_gatherer_node
-from app.graph.nodes.docs_answer import docs_answer_node
-from app.graph.nodes.docs_lookup import docs_lookup_node
-from app.graph.nodes.executor import executor_node
-from app.graph.nodes.lineage_answer import lineage_answer_node
-from app.graph.nodes.lineage_lookup import lineage_lookup_node
-from app.graph.nodes.router import router_node
-from app.graph.nodes.sql_generator import sql_generator_node
+from app.graph.nodes.planner import planner_node
 from app.graph.nodes.strategist import strategist_node
-from app.graph.nodes.validator import validator_node
-from app.graph.nodes.visualization import visualization_node
-from app.graph.state import GraphState
+from app.graph.nodes.subtask_runners import (
+    docs_subtask_runner_node,
+    lineage_subtask_runner_node,
+    sql_subtask_runner_node,
+)
+from app.graph.nodes.synthesizer import synthesizer_node
+from app.graph.state import GraphState, SubtaskResult
 
 logger = logging.getLogger(__name__)
+
+
+_SUBTASK_TYPE_TO_RUNNER = {
+    "sql": "sql_subtask_runner",
+    "docs": "docs_subtask_runner",
+    "lineage": "lineage_subtask_runner",
+}
 
 
 @dataclass
@@ -36,97 +42,109 @@ class WorkflowDeps:
     max_sql_retries: int = 3
 
 
-def _route_after_context(state: GraphState) -> Literal["router", "__end__"]:
+def _route_after_context(state: GraphState) -> Literal["planner", "__end__"]:
     if state.get("error"):
         return "__end__"
-    return "router"
+    return "planner"
 
 
-def _route_after_router(
-    state: GraphState,
-) -> Literal["sql_generator", "docs_lookup", "lineage_lookup"]:
-    qtype = state.get("question_type", "sql")
-    if qtype == "docs":
-        return "docs_lookup"
-    if qtype == "lineage":
-        return "lineage_lookup"
-    return "sql_generator"
+def _route_after_planner(state: GraphState) -> list[Send] | list[str]:
+    """Fan out new (uncompleted) subtasks via Send, one runner per subtask."""
+    subtasks: list[SubtaskResult] = list(state.get("subtasks", []) or [])
+    pending = [st for st in subtasks if not st.get("completed")]
+
+    if not pending:
+        return ["synthesizer", "strategist"]
+
+    sends: list[Send] = []
+    for st in pending:
+        target = _SUBTASK_TYPE_TO_RUNNER.get(st.get("type", ""))
+        if not target:
+            continue
+        # Send injects _current_subtask into the runner's invocation. The runner
+        # threads it through its inner pipeline procedurally.
+        payload = {**state, "_current_subtask": st}
+        sends.append(Send(target, payload))
+
+    if not sends:
+        return ["synthesizer", "strategist"]
+    return sends
 
 
-def _route_after_validation(state: GraphState) -> Literal["sql_generator", "executor", "__end__"]:
-    if state.get("validation_error"):
-        if state.get("sql_attempts", 0) < state.get("_max_retries", 3):
-            return "sql_generator"
-        return "__end__"
-    return "executor"
+def _route_after_join(state: GraphState) -> list[str] | str:
+    """After all subtasks converge: re-plan (if not ready) or finalize."""
+    if state.get("ready_to_answer"):
+        return ["synthesizer", "strategist"]
+    rounds = state.get("planning_rounds", 0)
+    if rounds >= 2:
+        return ["synthesizer", "strategist"]
+    return "planner"
 
 
-def _route_after_execution(
-    state: GraphState,
-) -> Literal["sql_generator", "visualization", "strategist", "__end__"] | list[str]:
-    if state.get("execution_error"):
-        if state.get("sql_attempts", 0) < state.get("_max_retries", 3):
-            return "sql_generator"
-        return "__end__"
-    if state.get("raw_data"):
-        # Fan-out to both analysis nodes in parallel
-        return ["visualization", "strategist"]
-    return "__end__"
+async def _subtask_join_run(state: GraphState) -> dict:
+    """No-op convergence point. All parallel runners terminate here."""
+    pending = [
+        st for st in state.get("subtasks", []) or []
+        if not st.get("completed")
+    ]
+    if pending:
+        ids = [st.get("subtask_id") for st in pending]
+        logger.warning("subtask_join reached with pending subtasks: %s", ids)
+    return {}
 
 
 def build_workflow(deps: WorkflowDeps) -> Any:
     graph = StateGraph(GraphState)
 
-    # Existing SQL pipeline nodes (unchanged)
     graph.add_node(
         "context_gatherer",
         context_gatherer_node(deps.sql_engine, deps.context_manager, deps.table_doc_manager),
     )
-    graph.add_node("sql_generator", sql_generator_node(deps.llm_client))
-    graph.add_node("validator", validator_node(deps.safety))
+    graph.add_node("planner", planner_node(deps.llm_client))
     graph.add_node(
-        "executor",
-        executor_node(deps.sql_engine, deps.timeout, deps.max_rows),
+        "sql_subtask_runner",
+        sql_subtask_runner_node(
+            deps.llm_client,
+            deps.sql_engine,
+            deps.safety,
+            deps.timeout,
+            deps.max_rows,
+            max_retries=deps.max_sql_retries,
+        ),
     )
     graph.add_node(
-        "visualization",
-        visualization_node(deps.llm_client, deps.sql_engine, deps.safety, deps.timeout, deps.max_rows),
+        "docs_subtask_runner",
+        docs_subtask_runner_node(deps.llm_client, deps.doc_store),
     )
+    graph.add_node(
+        "lineage_subtask_runner",
+        lineage_subtask_runner_node(deps.llm_client, deps.lineage_store),
+    )
+    graph.add_node("subtask_join", _subtask_join_run)
+    graph.add_node("synthesizer", synthesizer_node(deps.llm_client))
     graph.add_node("strategist", strategist_node(deps.llm_client))
 
-    # Router + new branches
-    graph.add_node("router", router_node(deps.llm_client))
-    graph.add_node("docs_lookup", docs_lookup_node(deps.doc_store))
-    graph.add_node("docs_answer", docs_answer_node(deps.llm_client))
-    graph.add_node("lineage_lookup", lineage_lookup_node(deps.lineage_store))
-    graph.add_node("lineage_answer", lineage_answer_node(deps.llm_client))
-
-    # Wire edges
     graph.set_entry_point("context_gatherer")
     graph.add_conditional_edges("context_gatherer", _route_after_context)
-    # Router dispatches to one of three subgraphs
-    graph.add_conditional_edges("router", _route_after_router)
-    # Existing SQL path (unchanged)
-    graph.add_edge("sql_generator", "validator")
-    graph.add_conditional_edges("validator", _route_after_validation)
-    graph.add_conditional_edges("executor", _route_after_execution)
-    graph.add_edge("visualization", END)
+    graph.add_conditional_edges("planner", _route_after_planner)
+
+    # All subtask runners terminate at the join.
+    graph.add_edge("sql_subtask_runner", "subtask_join")
+    graph.add_edge("docs_subtask_runner", "subtask_join")
+    graph.add_edge("lineage_subtask_runner", "subtask_join")
+
+    graph.add_conditional_edges("subtask_join", _route_after_join)
+
+    graph.add_edge("synthesizer", END)
     graph.add_edge("strategist", END)
-    # New paths
-    graph.add_edge("docs_lookup", "docs_answer")
-    graph.add_edge("docs_answer", END)
-    graph.add_edge("lineage_lookup", "lineage_answer")
-    graph.add_edge("lineage_answer", END)
 
     compiled = graph.compile()
 
     class WorkflowRunner:
-        def __init__(self, compiled_graph, max_retries: int):
+        def __init__(self, compiled_graph):
             self._graph = compiled_graph
-            self._max_retries = max_retries
 
         async def ainvoke(self, state: dict) -> dict:
-            state["_max_retries"] = self._max_retries
             return await self._graph.ainvoke(state)
 
-    return WorkflowRunner(compiled, deps.max_sql_retries)
+    return WorkflowRunner(compiled)

@@ -45,12 +45,21 @@ export interface LineageNode {
 }
 
 export interface Artifact {
-  type: "sql" | "chart" | "docs" | "lineage";
+  type: "sql" | "docs" | "lineage";
+  subtaskId?: string;
+  question?: string;
+  reason?: string;
+  // SQL fields
   query?: string;
   result?: QueryResult;
-  config?: ChartConfig;
+  chart?: ChartConfig;
+  // Docs fields
   docs?: DocResult[];
+  // Lineage fields
   lineage?: LineageNode;
+  // Per-subtask intermediate text from docs_answer / lineage_answer.
+  answerText?: string;
+  error?: string;
 }
 
 export interface TokenUsage {

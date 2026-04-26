@@ -10,10 +10,14 @@ logger = logging.getLogger(__name__)
 
 def docs_lookup_node(doc_store: DocStore):
     async def _run(state: GraphState) -> dict:
-        query = state.get("routing_subject") or state.get("user_question", "")
-        results = doc_store.search(query, limit=3)
+        current = state.get("_current_subtask") or {}
+        subtask_id = current.get("subtask_id", "?")
+        query = current.get("question") or state.get("user_question", "")
 
-        logger.info("Docs lookup for %r returned %d results", query, len(results))
+        results = doc_store.search(query, limit=3)
+        logger.info(
+            "Docs lookup [%s] for %r returned %d results", subtask_id, query, len(results)
+        )
 
         results_payload = [
             {
@@ -25,6 +29,10 @@ def docs_lookup_node(doc_store: DocStore):
             for entry in results
         ]
 
-        return {"docs_results": results_payload}
+        return {
+            "subtasks": [
+                {"subtask_id": subtask_id, "docs_results": results_payload}
+            ]
+        }
 
     return _run

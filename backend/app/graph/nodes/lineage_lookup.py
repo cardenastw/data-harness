@@ -10,26 +10,40 @@ logger = logging.getLogger(__name__)
 
 def lineage_lookup_node(lineage_store: LineageStore):
     async def _run(state: GraphState) -> dict:
-        subject = state.get("routing_subject", "")
+        current = state.get("_current_subtask") or {}
+        subtask_id = current.get("subtask_id", "?")
+        subject = current.get("question") or state.get("user_question", "")
+
         node = lineage_store.get(subject)
 
         if node is None:
-            # Provide the catalog so the answer node can suggest valid subjects.
             known = lineage_store.list_subjects()
-            logger.info("Lineage lookup miss for %r", subject)
+            logger.info("Lineage lookup [%s] miss for %r", subtask_id, subject)
             return {
-                "lineage_node": None,
-                "lineage_known": known,
+                "subtasks": [
+                    {
+                        "subtask_id": subtask_id,
+                        "lineage_node": None,
+                        "lineage_known": known,
+                    }
+                ]
             }
 
-        logger.info("Lineage lookup hit: kind=%s name=%s", node.kind, node.name)
+        logger.info(
+            "Lineage lookup [%s] hit: kind=%s name=%s", subtask_id, node.kind, node.name
+        )
         return {
-            "lineage_node": {
-                "kind": node.kind,
-                "name": node.name,
-                **node.data,
-            },
-            "lineage_known": None,
+            "subtasks": [
+                {
+                    "subtask_id": subtask_id,
+                    "lineage_node": {
+                        "kind": node.kind,
+                        "name": node.name,
+                        **node.data,
+                    },
+                    "lineage_known": None,
+                }
+            ]
         }
 
     return _run

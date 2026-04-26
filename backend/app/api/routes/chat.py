@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from fastapi import APIRouter, HTTPException, Request
 
 from app.api.schemas import ChatRequest, ChatResponse
@@ -6,12 +8,79 @@ from app.session_store import SessionStore
 router = APIRouter()
 
 
+def _summarize_artifact_for_history(artifact: dict) -> str:
+    """One-line compact summary of an artifact, for stuffing into session history.
+
+    The next turn's planner sees these summaries and can decide whether prior
+    queries already answered something the user is now asking again.
+    """
+    sid = artifact.get("subtask_id", "?")
+    atype = artifact.get("type", "?")
+    q = artifact.get("question", "")
+    err = artifact.get("error")
+    if err:
+        return f"[{sid}] {atype}: {q!r} → ERROR: {err}"
+    if atype == "sql":
+        sql = (artifact.get("sql") or "").replace("\n", " ").strip()
+        raw = artifact.get("raw_data") or {}
+        rc = raw.get("row_count", 0) if raw else 0
+        cols = raw.get("columns", []) if raw else []
+        first = raw.get("rows", [])[:2] if raw else []
+        return (
+            f"[{sid}] sql: {q!r} → {sql} → {rc} row(s); "
+            f"columns={cols}; first_rows={first}"
+        )
+    if atype == "docs":
+        docs = artifact.get("docs") or []
+        titles = [d.get("title", "?") for d in docs[:3]]
+        return f"[{sid}] docs: {q!r} → matched titles={titles}"
+    if atype == "lineage":
+        lineage = artifact.get("lineage")
+        if lineage:
+            return f"[{sid}] lineage: {q!r} → {lineage.get('kind')} {lineage.get('name')}"
+        return f"[{sid}] lineage: {q!r} → no record"
+    return f"[{sid}] {atype}: {q!r}"
+
+
+def _build_artifact(subtask: dict) -> dict | None:
+    """Project a SubtaskResult into a frontend-facing artifact dict."""
+    if not subtask.get("completed"):
+        return None
+    sid = subtask.get("subtask_id")
+    stype = subtask.get("type")
+    base: dict = {
+        "type": stype,
+        "subtask_id": sid,
+        "question": subtask.get("question", ""),
+        "reason": subtask.get("reason", ""),
+    }
+    err = (
+        subtask.get("error")
+        or subtask.get("execution_error")
+        or subtask.get("validation_error")
+    )
+    if err:
+        base["error"] = err
+
+    if stype == "sql":
+        base["sql"] = subtask.get("generated_sql")
+        base["raw_data"] = subtask.get("raw_data")
+        base["chart_json"] = subtask.get("chart_json")
+    elif stype == "docs":
+        base["docs"] = subtask.get("docs_results") or []
+        base["answer_text"] = subtask.get("docs_answer_text")
+    elif stype == "lineage":
+        base["lineage"] = subtask.get("lineage_node")
+        base["answer_text"] = subtask.get("lineage_answer_text")
+
+    return base
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, request: Request):
     workflow = request.app.state.workflow
     session_store: SessionStore = request.app.state.session_store
 
-    # Look up existing session or create a new one
     if req.session_id:
         session = session_store.get(req.session_id)
         if not session:
@@ -23,38 +92,47 @@ async def chat(req: ChatRequest, request: Request):
             )
         session = session_store.create(req.context_id)
 
-    # Append user message to session history
     session.messages.append({"role": "user", "content": req.message})
 
     initial_state = {
         "user_question": req.message,
         "context_id": session.context_id,
-        "session_messages": session.messages[:-1],  # prior history (current question sent separately)
+        "session_messages": session.messages[:-1],
     }
 
     result = await workflow.ainvoke(initial_state)
 
-    # Persist assistant response in session for follow-ups
-    sql = result.get("generated_sql")
-    raw_data = result.get("raw_data")
     error = result.get("error")
-    question_type = result.get("question_type")
     answer_text = result.get("answer_text")
-    docs_results = result.get("docs_results")
-    lineage_node = result.get("lineage_node")
+    subtasks = result.get("subtasks", []) or []
+    suggestions = result.get("suggestions", []) or []
 
+    # Build artifact list from completed subtasks.
+    artifacts: list[dict] = []
+    for st in subtasks:
+        artifact = _build_artifact(st)
+        if artifact is not None:
+            artifacts.append(artifact)
+
+    # Compose the assistant message we persist for next-turn LLM context.
+    # We flatten the structured artifacts into a single content string so the
+    # planner/sql_generator on the NEXT turn knows what was already fetched.
     if error:
         assistant_content = f"Error: {error}"
     elif answer_text:
-        # docs / lineage paths — the LLM already wrote a natural-language answer.
         assistant_content = answer_text
-    elif raw_data:
-        row_count = raw_data.get("row_count", 0)
-        assistant_content = f"Query returned {row_count} row{'s' if row_count != 1 else ''}."
-        if sql:
-            assistant_content = f"SQL: {sql}\n{assistant_content}"
+    elif artifacts:
+        assistant_content = f"Ran {len(artifacts)} subtask(s)."
     else:
         assistant_content = "No results returned."
+
+    if artifacts:
+        summaries = [_summarize_artifact_for_history(a) for a in artifacts]
+        assistant_content = (
+            f"{assistant_content}\n\n[Prior subtasks this turn:\n"
+            + "\n".join(summaries)
+            + "]"
+        )
 
     session.messages.append({"role": "assistant", "content": assistant_content})
 
@@ -82,14 +160,9 @@ async def chat(req: ChatRequest, request: Request):
 
     return ChatResponse(
         session_id=session.id,
-        question_type=question_type,
-        sql=sql,
-        raw_data=raw_data,
-        chart_json=result.get("chart_json"),
-        suggestions=result.get("suggestions", []),
-        docs_results=docs_results,
-        lineage_node=lineage_node,
         answer_text=answer_text,
+        artifacts=artifacts,
+        suggestions=suggestions,
         usage=usage_payload,
         error=error,
     )

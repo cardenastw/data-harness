@@ -49,6 +49,10 @@ Example:
 _TABLE_PATTERN = re.compile(
     r"\b(?:FROM|JOIN)\s+[\"'`]?(\w+)[\"'`]?", re.IGNORECASE
 )
+_CTE_NAME_PATTERN = re.compile(
+    r"\b(\w+)\s+AS\s*\(\s*(?:SELECT|WITH|VALUES)\b",
+    re.IGNORECASE,
+)
 
 
 def _extract_usage(response: Any) -> dict:
@@ -88,12 +92,27 @@ def visualization_node(
     max_rows: int = 500,
 ):
     async def _run(state: GraphState) -> dict:
-        raw_data = state.get("raw_data")
-        if not raw_data:
-            return {"chart_json": None, "token_usage": []}
+        current = state.get("_current_subtask") or {}
+        subtask_id = current.get("subtask_id", "?")
 
-        user_question = state["user_question"]
-        answer_query = state.get("generated_sql", "")
+        # Pull the freshest copy of the subtask from the merged list.
+        merged = current
+        for st in state.get("subtasks", []) or []:
+            if st.get("subtask_id") == subtask_id:
+                merged = {**current, **st}
+                break
+
+        raw_data = merged.get("raw_data")
+        if not raw_data:
+            return {
+                "subtasks": [
+                    {"subtask_id": subtask_id, "chart_json": None, "completed": True}
+                ],
+                "token_usage": [],
+            }
+
+        question = merged.get("question") or state.get("user_question", "")
+        answer_query = merged.get("generated_sql", "")
         schema_text = state.get("schema_text", "")
         context = state.get("context_config")
         today = datetime.now().strftime("%Y-%m-%d")
@@ -103,9 +122,8 @@ def visualization_node(
         usage_entries: list[dict] = []
 
         for attempt in range(MAX_CHART_ATTEMPTS):
-            # Ask LLM for chart spec
             user_content = (
-                f"User question: {user_question}\n"
+                f"User question: {question}\n"
                 f"Answer query: {answer_query}\n"
                 f"Today's date: {today}\n\n"
                 f"Schema:\n{schema_text}"
@@ -127,7 +145,9 @@ def visualization_node(
                 raw = response.choices[0].message.content or ""
                 chart_spec = _parse_chart_response(raw)
             except Exception:
-                logger.exception("Chart LLM call failed (attempt %d)", attempt + 1)
+                logger.exception(
+                    "Chart LLM call failed [%s] (attempt %d)", subtask_id, attempt + 1
+                )
                 last_error = "LLM call failed"
                 continue
 
@@ -136,25 +156,29 @@ def visualization_node(
                 continue
 
             chart_sql = chart_spec["query"]
-            logger.info("Chart SQL (attempt %d): %s", attempt + 1, chart_sql[:200])
+            logger.info(
+                "Chart SQL [%s] (attempt %d): %s", subtask_id, attempt + 1, chart_sql[:200]
+            )
 
-            # Validate chart SQL
             validation = safety.validate(chart_sql)
             if not validation.is_safe:
                 last_failed_sql = chart_sql
                 last_error = validation.reason
                 continue
 
-            # Table access check
             if context and hasattr(context, "visible_tables"):
                 referenced = set(_TABLE_PATTERN.findall(chart_sql))
                 visible = set(context.visible_tables)
-                if referenced - visible:
+                cte_names = {n.lower() for n in _CTE_NAME_PATTERN.findall(chart_sql)}
+                referenced_lower = {r.lower() for r in referenced}
+                visible_lower = {v.lower() for v in visible}
+                unauthorized_lower = referenced_lower - visible_lower - cte_names
+                unauthorized = {r for r in referenced if r.lower() in unauthorized_lower}
+                if unauthorized:
                     last_failed_sql = chart_sql
-                    last_error = f"References unauthorized tables: {referenced - visible}"
+                    last_error = f"References unauthorized tables: {sorted(unauthorized)}"
                     continue
 
-            # Execute chart query
             try:
                 result = await sql_engine.execute_query(
                     chart_sql, timeout_seconds=timeout, max_rows=max_rows,
@@ -164,7 +188,6 @@ def visualization_node(
                 last_error = str(exc)
                 continue
 
-            # Build chart
             chart_build = build_auto_chart(
                 result.columns,
                 result.rows,
@@ -178,10 +201,26 @@ def visualization_node(
                 last_error = chart_build.error
                 continue
 
-            logger.info("Chart generated successfully on attempt %d", attempt + 1)
-            return {"chart_json": chart_build.chart, "token_usage": usage_entries}
+            logger.info("Chart generated [%s] on attempt %d", subtask_id, attempt + 1)
+            return {
+                "subtasks": [
+                    {
+                        "subtask_id": subtask_id,
+                        "chart_json": chart_build.chart,
+                        "completed": True,
+                    }
+                ],
+                "token_usage": usage_entries,
+            }
 
-        logger.info("Chart generation exhausted %d attempts", MAX_CHART_ATTEMPTS)
-        return {"chart_json": None, "token_usage": usage_entries}
+        logger.info(
+            "Chart generation [%s] exhausted %d attempts", subtask_id, MAX_CHART_ATTEMPTS
+        )
+        return {
+            "subtasks": [
+                {"subtask_id": subtask_id, "chart_json": None, "completed": True}
+            ],
+            "token_usage": usage_entries,
+        }
 
     return _run

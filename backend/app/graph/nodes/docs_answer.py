@@ -46,21 +46,35 @@ def _format_docs_for_prompt(results: list[dict]) -> str:
 
 def docs_answer_node(llm_client: Any):
     async def _run(state: GraphState) -> dict:
-        user_question = state["user_question"]
-        results = state.get("docs_results") or []
+        current = state.get("_current_subtask") or {}
+        subtask_id = current.get("subtask_id", "?")
+        question = current.get("question") or state.get("user_question", "")
+
+        # docs_lookup wrote docs_results into the merged subtask list.
+        results: list[dict] = []
+        for st in state.get("subtasks", []) or []:
+            if st.get("subtask_id") == subtask_id:
+                results = st.get("docs_results") or []
+                break
 
         if not results:
             return {
-                "answer_text": (
-                    "I couldn't find documentation matching that question. "
-                    "Try rephrasing or asking about a specific term."
-                ),
+                "subtasks": [
+                    {
+                        "subtask_id": subtask_id,
+                        "docs_answer_text": (
+                            "I couldn't find documentation matching that question. "
+                            "Try rephrasing or asking about a specific term."
+                        ),
+                        "completed": True,
+                    }
+                ],
                 "token_usage": [],
             }
 
         docs_text = _format_docs_for_prompt(results)
         user_content = (
-            f"User question: {user_question}\n\n"
+            f"User question: {question}\n\n"
             f"Relevant documentation:\n{docs_text}"
         )
 
@@ -72,17 +86,31 @@ def docs_answer_node(llm_client: Any):
             usage = _extract_usage(response)
             answer = (response.choices[0].message.content or "").strip()
         except Exception:
-            logger.exception("Docs answer LLM call failed")
+            logger.exception("Docs answer LLM call failed [%s]", subtask_id)
             return {
-                "answer_text": (
-                    "I found relevant documentation but couldn't summarize it. "
-                    f"See: {results[0]['title']}."
-                ),
+                "subtasks": [
+                    {
+                        "subtask_id": subtask_id,
+                        "docs_answer_text": (
+                            "I found relevant documentation but couldn't summarize it. "
+                            f"See: {results[0]['title']}."
+                        ),
+                        "completed": True,
+                    }
+                ],
                 "token_usage": [],
             }
 
-        logger.info("Docs answer generated (%d chars)", len(answer))
-
-        return {"answer_text": answer, "token_usage": [usage]}
+        logger.info("Docs answer [%s] generated (%d chars)", subtask_id, len(answer))
+        return {
+            "subtasks": [
+                {
+                    "subtask_id": subtask_id,
+                    "docs_answer_text": answer,
+                    "completed": True,
+                }
+            ],
+            "token_usage": [usage],
+        }
 
     return _run

@@ -13,24 +13,20 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     session_id: str
-    # Routing — set by the router node so the frontend can branch on artifact type.
-    question_type: Optional[str] = None  # "sql" | "docs" | "lineage"
 
-    # SQL path
-    sql: Optional[str] = None
-    raw_data: Optional[Dict[str, Any]] = None
-    chart_json: Optional[Dict[str, Any]] = None
-    suggestions: List[str] = []
-
-    # Docs path
-    docs_results: Optional[List[Dict[str, Any]]] = None
-
-    # Lineage path
-    lineage_node: Optional[Dict[str, Any]] = None
-
-    # Natural-language answer text composed for docs/lineage paths.
-    # Empty for SQL path (frontend renders the chart + table instead).
+    # The synthesized natural-language answer. Composed by the synthesizer node
+    # from all subtask results.
     answer_text: Optional[str] = None
+
+    # Structured artifacts — one entry per completed subtask. Each entry has at
+    # minimum {type, subtask_id, question, reason} plus type-specific fields:
+    #   sql:     sql, raw_data, chart_json, error?
+    #   docs:    docs (list of {path, title, snippet, content}), answer_text, error?
+    #   lineage: lineage, answer_text, error?
+    artifacts: List[Dict[str, Any]] = []
+
+    # Cross-cutting follow-up questions across the whole turn.
+    suggestions: List[str] = []
 
     usage: Optional[Dict[str, Any]] = None
     error: Optional[str] = None

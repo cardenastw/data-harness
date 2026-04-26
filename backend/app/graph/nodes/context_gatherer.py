@@ -102,7 +102,8 @@ def context_gatherer_node(
             "system_prompt": system_prompt,
             "schema_text": schema_text,
             "context_config": context,
-            "sql_attempts": 0,
+            "planning_rounds": 0,
+            "subtasks": [],
         }
 
     return _run

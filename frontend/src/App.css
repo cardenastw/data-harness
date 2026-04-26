@@ -242,6 +242,42 @@ body {
   margin-top: 12px;
 }
 
+.artifact-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.artifact-type-tag {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+  background: rgba(99, 102, 241, 0.12);
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.artifact-question {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.artifact-error {
+  font-size: 13px;
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  padding: 6px 8px;
+  border-radius: 4px;
+  margin-bottom: 8px;
+}
+
 /* SQL Block */
 .sql-block {
   margin-top: 8px;

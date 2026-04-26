@@ -1,8 +1,10 @@
 import type {
   Artifact,
+  ChartConfig,
   ContextsResponse,
   DocResult,
   LineageNode,
+  QueryResult,
   TokenUsage,
 } from "../types";
 
@@ -14,22 +16,29 @@ export async function fetchContexts(): Promise<ContextsResponse> {
   return res.json();
 }
 
+interface ApiArtifact {
+  type: "sql" | "docs" | "lineage";
+  subtask_id?: string;
+  question?: string;
+  reason?: string;
+  // SQL
+  sql?: string | null;
+  raw_data?: QueryResult | null;
+  chart_json?: Record<string, unknown> | null;
+  // Docs
+  docs?: DocResult[];
+  // Lineage
+  lineage?: LineageNode | null;
+  // Either-side intermediate answer
+  answer_text?: string | null;
+  error?: string | null;
+}
+
 interface ChatApiResponse {
   session_id: string;
-  question_type: "sql" | "docs" | "lineage" | null;
-  sql: string | null;
-  raw_data: {
-    columns: string[];
-    rows: unknown[][];
-    row_count: number;
-    truncated: boolean;
-    execution_time_ms: number;
-  } | null;
-  chart_json: Record<string, unknown> | null;
-  suggestions: string[];
-  docs_results: DocResult[] | null;
-  lineage_node: LineageNode | null;
   answer_text: string | null;
+  artifacts: ApiArtifact[];
+  suggestions: string[];
   usage: {
     turn: TokenUsage;
     session: TokenUsage;
@@ -43,6 +52,31 @@ export interface ChatResult {
   artifacts: Artifact[];
   suggestions: string[];
   usage?: TokenUsage;
+}
+
+function mapArtifact(api: ApiArtifact): Artifact {
+  const base: Artifact = {
+    type: api.type,
+    subtaskId: api.subtask_id,
+    question: api.question,
+    reason: api.reason,
+    error: api.error ?? undefined,
+  };
+
+  if (api.type === "sql") {
+    base.query = api.sql ?? undefined;
+    base.result = api.raw_data ?? undefined;
+    if (api.chart_json) {
+      base.chart = api.chart_json as unknown as ChartConfig;
+    }
+  } else if (api.type === "docs") {
+    base.docs = api.docs ?? [];
+    base.answerText = api.answer_text ?? undefined;
+  } else if (api.type === "lineage") {
+    base.lineage = api.lineage ?? undefined;
+    base.answerText = api.answer_text ?? undefined;
+  }
+  return base;
 }
 
 export async function sendMessage(
@@ -74,52 +108,23 @@ export async function sendMessage(
     throw new Error(data.error);
   }
 
-  const artifacts: Artifact[] = [];
+  const artifacts = (data.artifacts || []).map(mapArtifact);
 
-  if (data.sql && data.raw_data) {
-    artifacts.push({
-      type: "sql",
-      query: data.sql,
-      result: {
-        columns: data.raw_data.columns,
-        rows: data.raw_data.rows,
-        row_count: data.raw_data.row_count,
-        truncated: data.raw_data.truncated,
-        execution_time_ms: data.raw_data.execution_time_ms,
-      },
-    });
-  }
-
-  if (data.chart_json) {
-    artifacts.push({
-      type: "chart",
-      config: data.chart_json as unknown as Artifact["config"],
-    });
-  }
-
-  if (data.docs_results && data.docs_results.length > 0) {
-    artifacts.push({
-      type: "docs",
-      docs: data.docs_results,
-    });
-  }
-
-  if (data.lineage_node) {
-    artifacts.push({
-      type: "lineage",
-      lineage: data.lineage_node,
-    });
-  }
-
-  let content = "";
-  if (data.answer_text) {
-    // docs / lineage path — server already wrote the natural-language answer.
-    content = data.answer_text;
-  } else if (data.raw_data) {
-    const { row_count, columns } = data.raw_data;
-    content = `Query returned ${row_count} row${row_count !== 1 ? "s" : ""} with ${columns.length} column${columns.length !== 1 ? "s" : ""}.`;
-  } else {
-    content = "No results returned.";
+  // The synthesizer composes the user-facing answer; fall back if absent.
+  let content = data.answer_text || "";
+  if (!content) {
+    if (artifacts.length === 0) {
+      content = "No results returned.";
+    } else {
+      const sqlCount = artifacts.filter((a) => a.type === "sql").length;
+      const docCount = artifacts.filter((a) => a.type === "docs").length;
+      const lineageCount = artifacts.filter((a) => a.type === "lineage").length;
+      const parts = [];
+      if (sqlCount) parts.push(`${sqlCount} query result${sqlCount > 1 ? "s" : ""}`);
+      if (docCount) parts.push(`${docCount} doc lookup${docCount > 1 ? "s" : ""}`);
+      if (lineageCount) parts.push(`${lineageCount} lineage record${lineageCount > 1 ? "s" : ""}`);
+      content = `Returned ${parts.join(", ")}.`;
+    }
   }
 
   return {

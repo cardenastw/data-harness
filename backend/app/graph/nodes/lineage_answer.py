@@ -40,20 +40,28 @@ def _extract_usage(response: Any) -> dict:
 
 def lineage_answer_node(llm_client: Any):
     async def _run(state: GraphState) -> dict:
-        user_question = state["user_question"]
-        node = state.get("lineage_node")
-        known = state.get("lineage_known")
+        current = state.get("_current_subtask") or {}
+        subtask_id = current.get("subtask_id", "?")
+        question = current.get("question") or state.get("user_question", "")
+
+        # lineage_lookup wrote lineage_node/lineage_known into the merged subtask.
+        node = None
+        known = None
+        for st in state.get("subtasks", []) or []:
+            if st.get("subtask_id") == subtask_id:
+                node = st.get("lineage_node")
+                known = st.get("lineage_known")
+                break
 
         if node is None:
-            # Build a fallback with the catalog so the LLM can suggest alternatives.
             catalog = json.dumps(known or {}, indent=2)
             user_content = (
-                f"User question: {user_question}\n\n"
+                f"User question: {question}\n\n"
                 f"No lineage record matched. Known subjects:\n{catalog}"
             )
         else:
             user_content = (
-                f"User question: {user_question}\n\n"
+                f"User question: {question}\n\n"
                 f"Lineage record:\n{json.dumps(node, indent=2, default=str)}"
             )
 
@@ -65,21 +73,35 @@ def lineage_answer_node(llm_client: Any):
             usage = _extract_usage(response)
             answer = (response.choices[0].message.content or "").strip()
         except Exception:
-            logger.exception("Lineage answer LLM call failed")
+            logger.exception("Lineage answer LLM call failed [%s]", subtask_id)
             if node is None:
-                return {
-                    "answer_text": "I couldn't find lineage for that subject.",
-                    "token_usage": [],
-                }
-            return {
-                "answer_text": (
+                fallback = "I couldn't find lineage for that subject."
+            else:
+                fallback = (
                     f"{node['kind'].title()} {node['name']}: "
                     f"upstream tables {node.get('upstream_tables', [])}."
-                ),
+                )
+            return {
+                "subtasks": [
+                    {
+                        "subtask_id": subtask_id,
+                        "lineage_answer_text": fallback,
+                        "completed": True,
+                    }
+                ],
                 "token_usage": [],
             }
 
-        logger.info("Lineage answer generated (%d chars)", len(answer))
-        return {"answer_text": answer, "token_usage": [usage]}
+        logger.info("Lineage answer [%s] generated (%d chars)", subtask_id, len(answer))
+        return {
+            "subtasks": [
+                {
+                    "subtask_id": subtask_id,
+                    "lineage_answer_text": answer,
+                    "completed": True,
+                }
+            ],
+            "token_usage": [usage],
+        }
 
     return _run
