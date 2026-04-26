@@ -110,6 +110,72 @@ def sql_subtask_runner_node(
     return _run
 
 
+def investigate_subtask_runner_node(
+    llm_client: Any,
+    sql_engine: Any,
+    safety: Any,
+    timeout: float = 30.0,
+    max_rows: int = 50,
+    max_retries: int = 1,
+):
+    """Investigation runner: small discovery query, no visualizer, tight caps.
+
+    Mirrors `sql_subtask_runner_node` but skips visualization (investigations
+    are scaffolding, not answers) and runs with `max_rows=50`, `max_retries=1`
+    so cheap discovery doesn't thrash.
+    """
+    sql_gen = sql_generator_node(llm_client)
+    val = validator_node(safety)
+    exe = executor_node(sql_engine, timeout, max_rows)
+
+    async def _run(state: GraphState) -> dict:
+        current: SubtaskResult = dict(state.get("_current_subtask") or {})
+        sid = current.get("subtask_id", "?")
+        token_usage: list[dict] = []
+
+        def scoped() -> dict:
+            return {
+                **state,
+                "_current_subtask": current,
+                "subtasks": [current],
+            }
+
+        for attempt in range(max_retries + 1):
+            ret = await sql_gen(scoped())
+            token_usage += _apply_subtask_updates(current, ret, sid)
+
+            ret = await val(scoped())
+            _apply_subtask_updates(current, ret, sid)
+
+            if current.get("validation_error"):
+                logger.info(
+                    "[%s] investigate validation failed (attempt %d/%d): %s",
+                    sid, attempt + 1, max_retries + 1, current["validation_error"],
+                )
+                if attempt < max_retries:
+                    continue
+                break
+
+            ret = await exe(scoped())
+            _apply_subtask_updates(current, ret, sid)
+
+            if current.get("execution_error"):
+                logger.info(
+                    "[%s] investigate execution failed (attempt %d/%d): %s",
+                    sid, attempt + 1, max_retries + 1, current["execution_error"],
+                )
+                if attempt < max_retries:
+                    continue
+                break
+
+            break
+
+        current["completed"] = True
+        return {"subtasks": [current], "token_usage": token_usage}
+
+    return _run
+
+
 def docs_subtask_runner_node(llm_client: Any, doc_store: Any):
     lookup = docs_lookup_node(doc_store)
     answer = docs_answer_node(llm_client)

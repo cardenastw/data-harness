@@ -117,14 +117,20 @@ def synthesizer_node(llm_client: Any):
         user_question = state["user_question"]
         subtasks: list[SubtaskResult] = list(state.get("subtasks", []) or [])
 
-        if not subtasks:
+        # Investigations are scaffolding (small discovery queries the planner
+        # ran to inform the answer). They are never shown to the user.
+        answer_subtasks = [
+            st for st in subtasks if st.get("type") != "investigate"
+        ]
+
+        if not answer_subtasks:
             return {
                 "answer_text": "I couldn't run any subtasks for that question.",
                 "token_usage": [],
             }
 
         formatted = "\n\n".join(
-            _format_subtask(st, i + 1) for i, st in enumerate(subtasks)
+            _format_subtask(st, i + 1) for i, st in enumerate(answer_subtasks)
         )
         user_content = (
             f"User question: {user_question}\n\n"
@@ -141,11 +147,11 @@ def synthesizer_node(llm_client: Any):
         except Exception:
             logger.exception("Synthesizer LLM call failed")
             # Fallback: short, factual summary of what ran.
-            n_ok = sum(1 for s in subtasks if s.get("completed") and not s.get("error"))
-            n_fail = sum(1 for s in subtasks if s.get("error") or s.get("execution_error"))
+            n_ok = sum(1 for s in answer_subtasks if s.get("completed") and not s.get("error"))
+            n_fail = sum(1 for s in answer_subtasks if s.get("error") or s.get("execution_error"))
             return {
                 "answer_text": (
-                    f"Ran {len(subtasks)} subtask(s) — {n_ok} succeeded, {n_fail} failed. "
+                    f"Ran {len(answer_subtasks)} subtask(s) — {n_ok} succeeded, {n_fail} failed. "
                     f"See artifacts below for details."
                 ),
                 "token_usage": [],

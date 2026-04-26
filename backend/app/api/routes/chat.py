@@ -46,8 +46,12 @@ def _build_artifact(subtask: dict) -> dict | None:
     """Project a SubtaskResult into a frontend-facing artifact dict."""
     if not subtask.get("completed"):
         return None
-    sid = subtask.get("subtask_id")
     stype = subtask.get("type")
+    # Investigations are scaffolding the planner uses internally — never
+    # surfaced to the frontend or persisted into next-turn session history.
+    if stype == "investigate":
+        return None
+    sid = subtask.get("subtask_id")
     base: dict = {
         "type": stype,
         "subtask_id": sid,

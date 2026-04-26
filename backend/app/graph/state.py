@@ -7,14 +7,15 @@ from typing import Annotated, Any, Literal, Optional, TypedDict
 class SubtaskResult(TypedDict, total=False):
     """One subtask the planner emitted, plus its execution output.
 
-    A single user message can produce multiple subtasks. Each is one of three
-    types: a SQL query, a doc lookup, or a lineage lookup. The reducer merges
-    updates by `subtask_id`, so the SQL self-correction loop overwrites the
-    same slot rather than appending duplicates.
+    A single user message can produce multiple subtasks. Each is one of four
+    types: a SQL query, an investigation (small discovery query the planner
+    runs before committing to an answer), a doc lookup, or a lineage lookup.
+    The reducer merges updates by `subtask_id`, so the SQL self-correction
+    loop overwrites the same slot rather than appending duplicates.
     """
 
     subtask_id: str  # "s1", "s2", ...
-    type: Literal["sql", "docs", "lineage"]
+    type: Literal["sql", "investigate", "docs", "lineage"]
     question: str  # planner's per-subtask question
     reason: str  # planner's rationale (used by synthesizer)
 

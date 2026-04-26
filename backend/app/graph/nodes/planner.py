@@ -14,8 +14,18 @@ PLANNER_SYSTEM_PROMPT = """\
 You are a planner for a data analyst assistant. Read the user's question and any
 results from prior subtasks, then decide what to do next.
 
-You can call three kinds of tools:
-- "sql": numeric data, aggregates, top-N, trends, breakdowns.
+You can call four kinds of tools:
+- "sql": numeric data, aggregates, top-N, trends, breakdowns. THE FINAL ANSWER.
+- "investigate": a SMALL discovery query you run before answering when you don't
+  know what values live in a column or what the data actually looks like. Use
+  when an enum-like column has unknown values, you need a date range, or you
+  want to confirm a join key has matches. Only emit one of:
+    SELECT DISTINCT col FROM t LIMIT 50
+    SELECT COUNT(*) FROM t WHERE ...
+    SELECT MIN(col), MAX(col) FROM t
+    SELECT * FROM t LIMIT 10
+  Investigation is NEVER the final answer. After investigating, the next round
+  will use the results to write the real answer.
 - "docs": definitions, business rules, policies, glossary entries.
 - "lineage": where a metric/column/table comes from.
 
@@ -24,7 +34,7 @@ Return ONLY a JSON object:
   "reasoning": "<one sentence on what the user wants and your plan>",
   "ready_to_answer": true | false,
   "new_subtasks": [
-    {"type": "sql" | "docs" | "lineage", "question": "...", "reason": "..."}
+    {"type": "sql" | "investigate" | "docs" | "lineage", "question": "...", "reason": "..."}
   ]
 }
 
@@ -36,6 +46,9 @@ Rules:
   by month is BETTER than two queries.
 - Combine SQL and docs in one plan when the user asks both for a number AND its
   definition (e.g. "what was net revenue last month and how do we define it").
+- If you spawn an "investigate" subtask, do NOT also spawn a "sql" subtask in the
+  same round — wait for the investigation to come back, then plan the answer in
+  the next round. Set ready_to_answer=false so you get another planning round.
 - If the prior round's results already answer the question, set
   ready_to_answer=true and new_subtasks=[].
 - After round 2, you cannot plan more — set ready_to_answer=true.
@@ -115,7 +128,7 @@ def _parse_plan(raw: str) -> dict:
         if not isinstance(entry, dict):
             continue
         stype = entry.get("type")
-        if stype not in ("sql", "docs", "lineage"):
+        if stype not in ("sql", "investigate", "docs", "lineage"):
             continue
         question = (entry.get("question") or "").strip()
         if not question:
@@ -141,17 +154,22 @@ def _summarize_completed_subtasks(subtasks: list[SubtaskResult]) -> str:
         sid = st.get("subtask_id", "?")
         stype = st.get("type", "?")
         q = st.get("question", "")
-        if stype == "sql":
+        if stype in ("sql", "investigate"):
             raw = st.get("raw_data") or {}
             rc = raw.get("row_count", 0) if raw else 0
             cols = raw.get("columns", []) if raw else []
-            preview = raw.get("rows", [])[:2] if raw else []
+            # Investigations get a longer preview — the planner needs to see the
+            # full set of distinct values / sample rows to choose a good answer query.
+            preview_n = 10 if stype == "investigate" else 2
+            preview = raw.get("rows", [])[:preview_n] if raw else []
+            sql = st.get("generated_sql", "")
             err = st.get("error") or st.get("execution_error") or st.get("validation_error")
             if err:
-                lines.append(f"- [{sid}] sql: {q!r} → ERROR: {err}")
+                lines.append(f"- [{sid}] {stype}: {q!r} → ERROR: {err}")
             else:
                 lines.append(
-                    f"- [{sid}] sql: {q!r} → {rc} row(s); columns={cols}; first={preview}"
+                    f"- [{sid}] {stype}: {q!r} → ran {sql!r}; {rc} row(s); "
+                    f"columns={cols}; rows={preview}"
                 )
         elif stype == "docs":
             docs = st.get("docs_results") or []
@@ -204,7 +222,10 @@ def planner_node(llm_client: Any):
                 f"\nResults from prior subtasks:\n{completed_summary}\n\n"
                 f"Decide whether these results already answer the question. "
                 f"If yes, set ready_to_answer=true and new_subtasks=[]. "
-                f"If you need ONE more lookup, emit it now — this is your last round."
+                f"If you need ONE more lookup, emit it now — this is your last round.\n"
+                f"You may NOT spawn 'investigate' subtasks this round — investigation "
+                f"is round-1 only. Either spawn the answering 'sql'/'docs'/'lineage' "
+                f"subtask(s) or set ready_to_answer=true."
             )
         user_content = "\n".join(user_parts)
 
@@ -245,6 +266,18 @@ def planner_node(llm_client: Any):
             len(plan["new_subtasks"]),
             plan["ready_to_answer"],
         )
+
+        # Round-2 lockout: investigation is round-1 only. If the model ignores
+        # the prompt rule and emits an investigate in the final round, downgrade
+        # it to sql so the user gets an answer instead of a hidden subtask.
+        if round_index >= 1:
+            for entry in plan["new_subtasks"]:
+                if entry["type"] == "investigate":
+                    logger.warning(
+                        "Planner emitted investigate in round %d; coercing to sql",
+                        round_index + 1,
+                    )
+                    entry["type"] = "sql"
 
         # Cap: at most MAX_SUBTASKS_PER_TURN total across all rounds.
         remaining_slots = MAX_SUBTASKS_PER_TURN - len(existing_subtasks)

@@ -47,6 +47,24 @@ def sql_generator_node(llm_client: Any):
         messages.extend(session_messages)
 
         user_content = question
+
+        # Investigation subtasks need a different mandate: write a SMALL
+        # discovery query, not the final answer.
+        if current.get("type") == "investigate":
+            user_content += (
+                "\n\nThis is an INVESTIGATION query, not the final answer."
+                " Write ONE small SELECT that surfaces the values, range, or"
+                " count needed to inform the answer query later. Prefer:"
+                "\n  - SELECT DISTINCT col FROM t LIMIT 50"
+                "\n  - SELECT COUNT(*) FROM t WHERE ..."
+                "\n  - SELECT MIN(col), MAX(col) FROM t"
+                "\n  - SELECT * FROM t LIMIT 10"
+                "\nDo NOT try to answer the user's question here. Do NOT compute"
+                " aggregations beyond simple COUNT/MIN/MAX. The result of this"
+                " query will be shown to you next round so you can write the"
+                " real answer."
+            )
+
         failed_sql = latest.get("generated_sql", "")
         if latest.get("validation_error"):
             user_content += (

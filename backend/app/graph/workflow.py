@@ -12,6 +12,7 @@ from app.graph.nodes.planner import planner_node
 from app.graph.nodes.strategist import strategist_node
 from app.graph.nodes.subtask_runners import (
     docs_subtask_runner_node,
+    investigate_subtask_runner_node,
     lineage_subtask_runner_node,
     sql_subtask_runner_node,
 )
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 _SUBTASK_TYPE_TO_RUNNER = {
     "sql": "sql_subtask_runner",
+    "investigate": "investigate_subtask_runner",
     "docs": "docs_subtask_runner",
     "lineage": "lineage_subtask_runner",
 }
@@ -113,6 +115,17 @@ def build_workflow(deps: WorkflowDeps) -> Any:
         ),
     )
     graph.add_node(
+        "investigate_subtask_runner",
+        investigate_subtask_runner_node(
+            deps.llm_client,
+            deps.sql_engine,
+            deps.safety,
+            deps.timeout,
+            max_rows=50,
+            max_retries=1,
+        ),
+    )
+    graph.add_node(
         "docs_subtask_runner",
         docs_subtask_runner_node(deps.llm_client, deps.doc_store),
     )
@@ -130,6 +143,7 @@ def build_workflow(deps: WorkflowDeps) -> Any:
 
     # All subtask runners terminate at the join.
     graph.add_edge("sql_subtask_runner", "subtask_join")
+    graph.add_edge("investigate_subtask_runner", "subtask_join")
     graph.add_edge("docs_subtask_runner", "subtask_join")
     graph.add_edge("lineage_subtask_runner", "subtask_join")
 
